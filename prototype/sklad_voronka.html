@@ -288,6 +288,42 @@
   .chat-foot{padding:14px 18px;border-top:1px solid var(--line2)}
   .chat-foot a{color:var(--blue);font-weight:600;font-size:13px;text-decoration:none;display:inline-flex;align-items:center;gap:7px}
 
+  /* фокус по этапу */
+  .stagebar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .stagebar .lbl{font-size:12.5px;font-weight:600;color:var(--muted)}
+  .stage-seg{display:flex;gap:4px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:3px}
+  .stage-seg button{border:0;background:transparent;padding:7px 12px;border-radius:8px;font:inherit;font-size:12.5px;font-weight:600;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .stage-seg button:hover{background:#F7F8FA;color:var(--ink2)}
+  .stage-seg button.on{background:var(--blue);color:#fff}
+  .stage-seg button.on .ico{stroke:#fff}
+  .stage-seg button .ico{stroke:var(--muted2)}
+  /* линзы этапов на вкладке «Операции» */
+  #view-ops.stage-receiving #board-out,
+  #view-ops.stage-receiving .bridge,
+  #view-ops.stage-receiving .await-launch{display:none}
+  #view-ops.stage-picking #board-in,
+  #view-ops.stage-picking .bridge{display:none}
+  #view-ops.stage-picking #board-out .col.st-ship{display:none}
+  #view-ops.stage-shipping #board-in,
+  #view-ops.stage-shipping .bridge,
+  #view-ops.stage-shipping .await-launch{display:none}
+  #view-ops.stage-shipping #board-out .col.st-pick{display:none}
+  /* зона ожидания запуска */
+  .col-head--steel::before{background:var(--steel)}
+  .wait-chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:7px}
+  .wait-chip.warn{color:var(--amber);background:var(--amber-soft)}
+  .wait-chip.bad{color:var(--red);background:var(--red-soft)}
+  .wait-chip .ico{stroke:currentColor}
+  /* блок товарной накладной */
+  .tn{background:#FAFBFC;border:1px solid var(--line2);border-radius:10px;padding:9px 11px;margin-top:9px}
+  .tn .tn-h{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:700;color:var(--ink2)}
+  .tn .tn-h .ico{stroke:var(--muted2)}
+  .tn .tn-st{font-size:12px;font-weight:600;margin-top:5px;display:flex;align-items:center;gap:6px}
+  .tn .tn-st.signed{color:var(--green)}
+  .tn .tn-st.wait{color:var(--amber)}
+  .tn .tn-by{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .pill[disabled]{opacity:.5;cursor:not-allowed;pointer-events:none}
+
   @media(max-width:1280px){.app{grid-template-columns:212px minmax(0,1fr)} .chat{display:none}}
 </style>
 </head>
@@ -397,7 +433,20 @@
       <button class="tab" id="tab-inv" onclick="showTab('inv')"><svg class="ico s"><use href="#i-clip"/></svg>Инвентаризация</button>
     </div>
 
-    <section id="view-ops" style="display:flex;flex-direction:column;gap:16px">
+    <section id="view-ops" class="stage-all" style="display:flex;flex-direction:column;gap:16px">
+
+      <div class="stagebar">
+        <span class="lbl">Фокус по этапу:</span>
+        <div class="stage-seg">
+          <button class="on" onclick="setStage('all',this)"><svg class="ico xs"><use href="#i-grid"/></svg>Все</button>
+          <button onclick="setStage('receiving',this)"><svg class="ico xs"><use href="#i-inbound"/></svg>Приёмка</button>
+          <button onclick="setStage('picking',this)"><svg class="ico xs"><use href="#i-stack"/></svg>Сборка</button>
+          <button onclick="setStage('shipping',this)"><svg class="ico xs"><use href="#i-truck"/></svg>Отгрузка</button>
+          <button onclick="setStage('inventory',this)"><svg class="ico xs"><use href="#i-clip"/></svg>Инвентаризация</button>
+        </div>
+      </div>
+
+      <div id="toast-ops" class="toast"><svg class="ico s"><use href="#i-check"/></svg><span class="toast-txt"></span></div>
 
       <div>
         <div class="section-title">План на сегодня</div>
@@ -513,7 +562,7 @@
                 <div class="c-line"><svg class="ico s"><use href="#i-shield"/></svg>Проверено: 32 / 40</div>
                 <div class="c-line"><span class="badge b-high"><svg class="ico xs"><use href="#i-alert"/></svg>Брак: 2 поз.</span></div>
                 <div class="pills"><div class="pill ok"><svg class="ico xs"><use href="#i-check"/></svg>Принять качество</div><div class="pill"><svg class="ico xs"><use href="#i-alert"/></svg>Брак</div></div>
-                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>ОТК: Волкова М.</span><span class="date">12.05</span></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Кладовщик: Сидоров С.С.</span><span class="date">12.05</span></div>
               </div>
               <div class="card">
                 <div class="c-top"><span class="c-id">№ КК-2024-0124</span><span class="grow"></span><span class="badge b-med">Средний</span></div>
@@ -522,7 +571,7 @@
                 <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Под клиента</div>
                 <div class="c-line"><svg class="ico s"><use href="#i-shield"/></svg>Проверено: 12 / 12 · <span class="pos">брак 0</span></div>
                 <div class="actions"><div class="act"><svg class="ico s"><use href="#i-doc"/></svg></div><div class="act"><svg class="ico s"><use href="#i-barcode"/></svg></div><div class="act"><svg class="ico s"><use href="#i-printer"/></svg></div><div class="act"><svg class="ico s"><use href="#i-cam"/></svg></div><div class="act"><svg class="ico s"><use href="#i-msg"/></svg></div></div>
-                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Волкова М.</span><span class="date">11.05</span></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span><span class="date">11.05</span></div>
               </div>
               <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить проверку</div>
             </div>
@@ -577,12 +626,48 @@
         <div class="bl" style="color:var(--muted2);font-weight:500">· продажа со склада оформляется в CRM (резерв) и тоже создаёт заказ на отгрузку</div>
       </div>
 
+      <div class="hint"><svg class="ico s"><use href="#i-shield"/></svg>Сборку запускает офис-менеджер или продавец кнопкой «Отправить на сборку» — склад сам её не начинает. Товарную накладную тоже формирует офис; склад выдаёт товар по подписанной ТН. Если команды на сборку нет дольше 4 рабочих часов — заказ подсвечивается складу, и склад может запросить запуск.</div>
+
+      <div class="board-block await-launch">
+        <div class="board-title"><span class="tag out" style="color:var(--steel-ink);background:var(--steel-soft)">Ожидание</span>Ожидают запуска из офиса<span class="doc">товар готов, но команды «Отправить на сборку» ещё нет</span></div>
+      <div class="kanban-scroll">
+        <div class="kanban">
+          <div class="col" style="width:340px">
+            <div class="col-head col-head--steel"><div class="col-title">Ждут команды «на сборку»</div>
+              <div class="col-meta"><b>2</b> заказа · <b>21</b> поз. · <b>1 730 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card await">
+                <div class="c-top"><span class="c-id">№ ЗО-2024-0168</span><span class="grow"></span><span class="wait-chip bad"><svg class="ico xs"><use href="#i-hist"/></svg>ждёт 1 дн 2 ч</span></div>
+                <div class="c-name">ООО РегионСталь</div>
+                <div class="c-sub">Металлопрокат — 15 поз. · <span class="link">CRM-2024-0149</span></div>
+                <div class="c-line"><svg class="ico s"><use href="#i-check"/></svg>Товар на складе · <span class="pos">готов к сборке</span></div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-alert"/></svg>Продавец не нажал «Отправить на сборку»</div>
+                <div class="c-amt">1 180 000 ₽</div>
+                <div class="pills"><div class="pill go" onclick="requestLaunch(this)"><svg class="ico xs"><use href="#i-msg"/></svg>Запросить запуск</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Ответственный в офисе: Петров П.П.</span></div>
+              </div>
+              <div class="card await">
+                <div class="c-top"><span class="c-id">№ ЗО-2024-0169</span><span class="grow"></span><span class="wait-chip warn"><svg class="ico xs"><use href="#i-hist"/></svg>ждёт 6 ч</span></div>
+                <div class="c-name">ООО ТехноСервис</div>
+                <div class="c-sub">Комплектующие — 6 поз. · <span class="link">CRM-2024-0151</span></div>
+                <div class="c-line"><svg class="ico s"><use href="#i-check"/></svg>Товар на складе · <span class="pos">готов к сборке</span></div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-alert"/></svg>Команда на сборку из офиса не поступила</div>
+                <div class="c-amt">550 000 ₽</div>
+                <div class="pills"><div class="pill go" onclick="requestLaunch(this)"><svg class="ico xs"><use href="#i-msg"/></svg>Запросить запуск</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Ответственный в офисе: Иванов И.И.</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+
       <div class="board-block" id="board-out">
         <div class="board-title"><span class="tag out">Отгрузка</span>Сборка и отгрузка<span class="doc">исходящий поток · отдельный документ «заказ на отгрузку»</span></div>
       <div class="kanban-scroll">
         <div class="kanban">
 
-          <div class="col">
+          <div class="col st-pick">
             <div class="col-head col-head--blue"><div class="col-title">Заказ на отгрузку</div>
               <div class="col-meta"><b>9</b> заказов · <b>58</b> поз. · <b>4 200 000 ₽</b></div></div>
             <div class="col-body">
@@ -591,6 +676,7 @@
                 <div class="c-name">ООО МеталлПром</div>
                 <div class="c-sub">Металлопрокат — 12 поз. · <span class="link">CRM-2024-0156</span></div>
                 <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Под клиента · РЗ-0140 размещено</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-arrow"/></svg>Отправлено на сборку: офис-менеджер · 09:20</div>
                 <div class="c-amt">850 000 ₽</div>
                 <div class="c-line muted"><svg class="ico s"><use href="#i-pin"/></svg>Со склада: Зона A · Ст.3</div>
                 <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-stack"/></svg>В сборку</div></div>
@@ -601,6 +687,7 @@
                 <div class="c-name">ООО ПромСнаб</div>
                 <div class="c-sub">Уплотнители резиновые — 24 поз. · <span class="link">CRM-2024-0140</span></div>
                 <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Продажа со склада · резерв в CRM</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-arrow"/></svg>Отправлено на сборку: продавец · 10:05</div>
                 <div class="c-amt">1 050 000 ₽</div>
                 <div class="c-line muted"><svg class="ico s"><use href="#i-pin"/></svg>Резерв: Зона B · Ст.2 · Я.08</div>
                 <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-stack"/></svg>В сборку</div></div>
@@ -610,7 +697,7 @@
             </div>
           </div>
 
-          <div class="col">
+          <div class="col st-pick">
             <div class="col-head col-head--violet"><div class="col-title">Подготовка</div>
               <div class="col-meta"><b>14</b> заданий · <b>70</b> поз. · <b>7 300 000 ₽</b></div></div>
             <div class="col-body">
@@ -647,7 +734,7 @@
             </div>
           </div>
 
-          <div class="col">
+          <div class="col st-ship">
             <div class="col-head col-head--teal"><div class="col-title">Готово к отгрузке</div>
               <div class="col-meta"><b>16</b> заказов · <b>120</b> поз. · <b>6 800 000 ₽</b></div></div>
             <div class="col-body">
@@ -659,7 +746,10 @@
                 <div class="c-line">Упаковано: 12 / 12 <span class="pos">· документы готовы</span></div>
                 <div class="c-amt">850 000 ₽</div>
                 <div class="c-line muted"><svg class="ico s"><use href="#i-truck"/></svg>Курьер 14:00</div>
-                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-check"/></svg>Передать клиенту</div></div>
+                <div class="tn"><div class="tn-h"><svg class="ico s"><use href="#i-doc"/></svg>Товарная накладная № ТН-0488</div>
+                  <div class="tn-st signed"><svg class="ico xs"><use href="#i-check"/></svg>Подписана клиентом</div>
+                  <div class="tn-by">Сформировал офис-менеджер · клиент подписал в офисе</div></div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-check"/></svg>Выдать по ТН</div></div>
                 <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span></div>
               </div>
               <div class="card">
@@ -670,13 +760,17 @@
                 <div class="c-line">Готово · <span class="pos">упаковано</span></div>
                 <div class="c-amt">3 750 000 ₽</div>
                 <div class="c-line muted"><svg class="ico s"><use href="#i-truck"/></svg>Логистика · маршрут №12 · 13.05</div>
-                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Иванов И.И.</span></div>
+                <div class="tn"><div class="tn-h"><svg class="ico s"><use href="#i-doc"/></svg>Товарная накладная № ТН-0489</div>
+                  <div class="tn-st wait"><svg class="ico xs"><use href="#i-hist"/></svg>Ожидает подписи в офисе</div>
+                  <div class="tn-by">Сформировал офис-менеджер · ещё не спущена на склад</div></div>
+                <div class="pills"><div class="pill go" disabled><svg class="ico xs"><use href="#i-check"/></svg>Выдать по ТН</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span></div>
               </div>
               <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить заказ</div>
             </div>
           </div>
 
-          <div class="col">
+          <div class="col st-ship">
             <div class="col-head col-head--green"><div class="col-title">Отгружено: Успешно</div>
               <div class="col-meta"><b>42</b> заказа · <b>845</b> поз. · <b>15 600 000 ₽</b></div></div>
             <div class="col-body">
@@ -908,7 +1002,7 @@
                 <div class="c-line"><svg class="ico s"><use href="#i-shield"/></svg>Проверено: 8 / 12</div>
                 <div class="c-line"><span class="badge b-ok">Годен: 8</span> <span class="badge b-high">Брак: 0</span></div>
                 <div class="pills"><div class="pill ok"><svg class="ico xs"><use href="#i-check"/></svg>Годен → в остаток</div><div class="pill"><svg class="ico xs"><use href="#i-alert"/></svg>В брак</div></div>
-                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>ОТК: Волкова М.</span><span class="date">12.05</span></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Кладовщик: Сидоров С.С.</span><span class="date">12.05</span></div>
               </div>
               <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить</div>
             </div>
@@ -990,9 +1084,9 @@
                   <div class="kv"><span>A-позиции</span><span>ежемесячно</span></div>
                   <div class="kv"><span>B-позиции</span><span>раз в квартал</span></div>
                   <div class="kv"><span>C-позиции</span><span>раз в полгода · эта</span></div></div>
-                <div class="c-line"><svg class="ico s"><use href="#i-cal"/></svg>Старт: 14.05.2024 · слепой пересчёт · 2 счётчика</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-cal"/></svg>Старт: 14.05.2024 · слепой пересчёт</div>
                 <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-clip"/></svg>Начать пересчёт</div><div class="pill"><svg class="ico xs"><use href="#i-printer"/></svg>Счётные листы</div></div>
-                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Зав. складом: Сидоров С.С.</span><span class="date">14.05</span></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Кладовщик: Сидоров С.С.</span><span class="date">14.05</span></div>
               </div>
               <div class="card">
                 <div class="c-top"><span class="c-id">№ ИН-2024-0013</span><span class="grow"></span><span class="badge b-med">Внеплановая</span></div>
@@ -1000,7 +1094,7 @@
                 <div class="c-sub">Триггер: расхождение при отборе (ПД-0151)</div>
                 <div class="c-line"><svg class="ico s"><use href="#i-alert"/></svg>Учёт: 6 · сборщик нашёл: 4 · <span class="neg">−2 поз.</span></div>
                 <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-barcode"/></svg>Пересчитать ячейку</div></div>
-                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Диспетчер: Иванов И.И.</span><span class="date">12.05</span></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Кладовщик: Сидоров С.С.</span><span class="date">12.05</span></div>
               </div>
               <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Запланировать инвентаризацию</div>
             </div>
@@ -1013,7 +1107,7 @@
               <div class="card">
                 <div class="c-top"><span class="c-id">№ ИН-2024-0011</span><span class="grow"></span><span class="badge b-info">В работе</span><svg class="ico s star on"><use href="#i-star"/></svg></div>
                 <div class="c-name">Зона B · полная</div>
-                <div class="c-sub">Плановая · слепой пересчёт · 2 счётчика</div>
+                <div class="c-sub">Плановая · слепой пересчёт</div>
                 <div class="panel-soft"><div class="ttl">Прогресс</div>
                   <div class="kv"><span>Пересчитано</span><span>320 / 500 поз.</span></div>
                   <div class="kv"><span>Спорных (повторный счёт)</span><span class="neg">3 поз.</span></div>
@@ -1021,7 +1115,7 @@
                 <div class="bar"><i style="width:64%;background:var(--indigo)"></i></div>
                 <div class="stat-pct">64% пересчитано · зона на время счёта закрыта для отбора</div>
                 <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-check"/></svg>Внести результаты</div><div class="pill"><svg class="ico xs"><use href="#i-cycle"/></svg>Повторный счёт</div></div>
-                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Счётчики: Сидоров С.С. +1</span><span class="date">12.05</span></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Кладовщик: Сидоров С.С.</span><span class="date">12.05</span></div>
               </div>
               <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить зону</div>
             </div>
@@ -1047,7 +1141,7 @@
                   <div class="kv"><span>Хомуты монтажные</span><span class="neg">−2</span></div>
                   <div class="kv"><span>Фитинги латунные</span><span class="pos">+2</span></div></div>
                 <div class="pills"><div class="pill"><svg class="ico xs"><use href="#i-cycle"/></svg>Повторный пересчёт</div><div class="pill go"><svg class="ico xs"><use href="#i-doc"/></svg>Сформировать акт</div></div>
-                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Зав. складом: Сидоров С.С.</span><span class="date">11.05</span></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Кладовщик: Сидоров С.С.</span><span class="date">11.05</span></div>
               </div>
               <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить</div>
             </div>
@@ -1065,7 +1159,7 @@
                   <div class="kv"><span>Недостача</span><span class="neg">−16 поз. / −214 000 ₽</span></div>
                   <div class="kv"><span>Излишки</span><span class="pos">+7 поз. / +52 000 ₽</span></div>
                   <div class="kv"><span>Итого</span><span class="neg">−162 000 ₽</span></div></div>
-                <div class="c-line"><svg class="ico s"><use href="#i-check"/></svg>Зав. складом: утвердил · <span class="neg">бухгалтерия: ожидает</span></div>
+                <div class="c-line"><svg class="ico s"><use href="#i-check"/></svg>Кладовщик: утвердил · <span class="neg">бухгалтерия: ожидает</span></div>
                 <div class="dest dest-stk"><svg class="ico xs"><use href="#i-doc"/></svg>Корректировка остатков — документом в 1С после утверждения</div>
                 <div class="pills"><div class="pill"><svg class="ico xs"><use href="#i-doc"/></svg>Открыть акт</div><div class="pill"><svg class="ico xs"><use href="#i-msg"/></svg>Напомнить бухгалтерии</div></div>
                 <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Согласует: Главбух</span><span class="date">11.05</span></div>
@@ -1150,6 +1244,23 @@ function signalProcurement(btn){
   t.querySelector('.toast-txt').textContent = 'Потребность по «' + name + '» отправлена в Закупки — решение принимает закупщик.';
   t.classList.remove('show'); void t.offsetWidth; t.classList.add('show');
   clearTimeout(window.__tt); window.__tt = setTimeout(function(){ t.classList.remove('show'); }, 4000);
+}
+function setStage(stage, btn){
+  showTab('ops');
+  var s = document.getElementById('view-ops');
+  s.classList.remove('stage-all','stage-receiving','stage-picking','stage-shipping');
+  s.classList.add('stage-' + (stage==='inventory' ? 'all' : stage));
+  var seg = btn.parentNode;
+  seg.querySelectorAll('button').forEach(function(b){ b.classList.toggle('on', b===btn); });
+  if(stage==='inventory'){ showTab('inv'); }
+}
+function requestLaunch(btn){
+  var card = btn.closest('.card');
+  var name = card.querySelector('.c-name') ? card.querySelector('.c-name').textContent : 'заказу';
+  var t = document.getElementById('toast-ops');
+  t.querySelector('.toast-txt').textContent = 'Запрос на запуск сборки по «' + name + '» отправлен в офис — решение за менеджером/продавцом.';
+  t.classList.remove('show'); void t.offsetWidth; t.classList.add('show');
+  clearTimeout(window.__tl); window.__tl = setTimeout(function(){ t.classList.remove('show'); }, 4000);
 }
 </script>
 </body>
