@@ -358,7 +358,7 @@
         <a onclick="gotoBoard('out')">Сборка и отгрузка</a>
         <a id="sub-stock" onclick="showTab('stock')">Остатки</a>
         <a id="sub-returns" onclick="showTab('returns')">Возвраты</a>
-        <a>Инвентаризация</a>
+        <a id="sub-inv" onclick="showTab('inv')">Инвентаризация</a>
       </div>
       <a class="nav-item"><svg class="ico"><use href="#i-truck"/></svg>Логистика</a>
       <a class="nav-item"><svg class="ico"><use href="#i-wallet"/></svg>Финансы</a>
@@ -394,6 +394,7 @@
       <button class="tab active" id="tab-ops" onclick="showTab('ops')"><svg class="ico s"><use href="#i-cols"/></svg>Операции</button>
       <button class="tab" id="tab-stock" onclick="showTab('stock')"><svg class="ico s"><use href="#i-table"/></svg>Остатки</button>
       <button class="tab" id="tab-returns" onclick="showTab('returns')"><svg class="ico s"><use href="#i-cycle"/></svg>Возвраты</button>
+      <button class="tab" id="tab-inv" onclick="showTab('inv')"><svg class="ico s"><use href="#i-clip"/></svg>Инвентаризация</button>
     </div>
 
     <section id="view-ops" style="display:flex;flex-direction:column;gap:16px">
@@ -961,6 +962,144 @@
 
     </section>
 
+    <section id="view-inv" style="display:none;flex-direction:column;gap:16px">
+
+      <div class="stock-kpis">
+        <div class="kpi"><div class="kl">Активные инвентаризации</div><div class="kv2">5</div><div class="kd">в работе</div></div>
+        <div class="kpi"><div class="kl">Пересчитано за месяц</div><div class="kv2">1 820</div><div class="kd">позиций</div></div>
+        <div class="kpi"><div class="kl">Точность учёта</div><div class="kv2">98,6%</div><div class="kd">по закрытым актам</div></div>
+        <div class="kpi"><div class="kl">Недостачи</div><div class="kv2 bad">−26</div><div class="kd">поз. за месяц</div></div>
+        <div class="kpi"><div class="kl">Излишки</div><div class="kv2">+9</div><div class="kd">поз. за месяц</div></div>
+        <div class="kpi"><div class="kl">Корректировки в 1С</div><div class="kv2 sm bad">−298 000 ₽</div><div class="kd">за месяц</div></div>
+      </div>
+
+      <div class="hint"><svg class="ico s"><use href="#i-shield"/></svg>Кладовщик пересчитывает и фиксирует факт (слепой пересчёт — без учётных цифр). Сличительную ведомость утверждает заведующий складом; корректировка остатков проводится документом в 1С после подтверждения бухгалтерии.</div>
+
+      <div class="kanban-scroll">
+        <div class="kanban">
+
+          <div class="col">
+            <div class="col-head col-head--blue"><div class="col-title">Запланирована</div>
+              <div class="col-meta"><b>2</b> инвентаризации · <b>426</b> поз. план</div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ИН-2024-0012</span><span class="grow"></span><span class="badge b-info">Плановая</span></div>
+                <div class="c-name">Зона C · циклический пересчёт</div>
+                <div class="c-sub">По графику ABC · 420 поз.</div>
+                <div class="panel-soft"><div class="ttl">График циклов (ABC)</div>
+                  <div class="kv"><span>A-позиции</span><span>ежемесячно</span></div>
+                  <div class="kv"><span>B-позиции</span><span>раз в квартал</span></div>
+                  <div class="kv"><span>C-позиции</span><span>раз в полгода · эта</span></div></div>
+                <div class="c-line"><svg class="ico s"><use href="#i-cal"/></svg>Старт: 14.05.2024 · слепой пересчёт · 2 счётчика</div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-clip"/></svg>Начать пересчёт</div><div class="pill"><svg class="ico xs"><use href="#i-printer"/></svg>Счётные листы</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Зав. складом: Сидоров С.С.</span><span class="date">14.05</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ИН-2024-0013</span><span class="grow"></span><span class="badge b-med">Внеплановая</span></div>
+                <div class="c-name">Ячейка A · Ст.5 · Метизы М8×40</div>
+                <div class="c-sub">Триггер: расхождение при отборе (ПД-0151)</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-alert"/></svg>Учёт: 6 · сборщик нашёл: 4 · <span class="neg">−2 поз.</span></div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-barcode"/></svg>Пересчитать ячейку</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Диспетчер: Иванов И.И.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Запланировать инвентаризацию</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--indigo"><div class="col-title">Пересчёт</div>
+              <div class="col-meta"><b>1</b> в работе · <b>500</b> поз.</div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ИН-2024-0011</span><span class="grow"></span><span class="badge b-info">В работе</span><svg class="ico s star on"><use href="#i-star"/></svg></div>
+                <div class="c-name">Зона B · полная</div>
+                <div class="c-sub">Плановая · слепой пересчёт · 2 счётчика</div>
+                <div class="panel-soft"><div class="ttl">Прогресс</div>
+                  <div class="kv"><span>Пересчитано</span><span>320 / 500 поз.</span></div>
+                  <div class="kv"><span>Спорных (повторный счёт)</span><span class="neg">3 поз.</span></div>
+                  <div class="kv"><span>Срок</span><span>13.05.2024</span></div></div>
+                <div class="bar"><i style="width:64%;background:var(--indigo)"></i></div>
+                <div class="stat-pct">64% пересчитано · зона на время счёта закрыта для отбора</div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-check"/></svg>Внести результаты</div><div class="pill"><svg class="ico xs"><use href="#i-cycle"/></svg>Повторный счёт</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Счётчики: Сидоров С.С. +1</span><span class="date">12.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить зону</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--amber"><div class="col-title">Сверка расхождений</div>
+              <div class="col-meta"><b>1</b> сличение · <b>1 240</b> поз. учёт</div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ИН-2024-0010</span><span class="grow"></span><span class="badge b-med">Расхождения</span></div>
+                <div class="c-name">Зона D · выборочная</div>
+                <div class="c-sub">Сличительная ведомость · учёт vs факт</div>
+                <div class="panel-soft"><div class="ttl">Сличение</div>
+                  <div class="kv"><span>Учёт</span><span>1 240 поз.</span></div>
+                  <div class="kv"><span>Факт</span><span>1 232 поз.</span></div>
+                  <div class="kv"><span>Недостача</span><span class="neg">−10 поз.</span></div>
+                  <div class="kv"><span>Излишки</span><span class="pos">+2 поз.</span></div>
+                  <div class="kv"><span>Сумма</span><span class="neg">−96 000 ₽</span></div></div>
+                <div class="panel-soft"><div class="ttl">Топ расхождений</div>
+                  <div class="kv"><span>Крепёж нержавеющий А2</span><span class="neg">−5</span></div>
+                  <div class="kv"><span>Профиль алюминиевый 40×40</span><span class="neg">−3</span></div>
+                  <div class="kv"><span>Хомуты монтажные</span><span class="neg">−2</span></div>
+                  <div class="kv"><span>Фитинги латунные</span><span class="pos">+2</span></div></div>
+                <div class="pills"><div class="pill"><svg class="ico xs"><use href="#i-cycle"/></svg>Повторный пересчёт</div><div class="pill go"><svg class="ico xs"><use href="#i-doc"/></svg>Сформировать акт</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Зав. складом: Сидоров С.С.</span><span class="date">11.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--cyan"><div class="col-title">Корректировка / согласование</div>
+              <div class="col-meta"><b>1</b> акт · <b>−162 000 ₽</b> к корректировке</div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ИН-2024-0009</span><span class="grow"></span><span class="badge b-high">Ждёт бухгалтерию</span></div>
+                <div class="c-name">Зона E · полная</div>
+                <div class="c-sub">Акт инвентаризации сформирован</div>
+                <div class="panel-soft"><div class="ttl">К корректировке</div>
+                  <div class="kv"><span>Недостача</span><span class="neg">−16 поз. / −214 000 ₽</span></div>
+                  <div class="kv"><span>Излишки</span><span class="pos">+7 поз. / +52 000 ₽</span></div>
+                  <div class="kv"><span>Итого</span><span class="neg">−162 000 ₽</span></div></div>
+                <div class="c-line"><svg class="ico s"><use href="#i-check"/></svg>Зав. складом: утвердил · <span class="neg">бухгалтерия: ожидает</span></div>
+                <div class="dest dest-stk"><svg class="ico xs"><use href="#i-doc"/></svg>Корректировка остатков — документом в 1С после утверждения</div>
+                <div class="pills"><div class="pill"><svg class="ico xs"><use href="#i-doc"/></svg>Открыть акт</div><div class="pill"><svg class="ico xs"><use href="#i-msg"/></svg>Напомнить бухгалтерии</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Согласует: Главбух</span><span class="date">11.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--green"><div class="col-title">Закрыто</div>
+              <div class="col-meta"><b>6</b> за месяц · точность <b>98,6%</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ИН-2024-0008</span><span class="grow"></span><span class="badge b-ok"><svg class="ico xs"><use href="#i-check"/></svg>Закрыто</span></div>
+                <div class="c-name">Зона A · полная</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-shield"/></svg>Расхождений нет · точность 99,4%</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-cal"/></svg>Закрыто 10.05.2024</div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ИН-2024-0007</span><span class="grow"></span><span class="badge b-ok"><svg class="ico xs"><use href="#i-check"/></svg>Закрыто</span></div>
+                <div class="c-name">Ячейка D · Ст.1 · внеплановая</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-doc"/></svg>Корректировка −2 поз. · проведена в 1С</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-cal"/></svg>Закрыто 08.05.2024</div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Иванов И.И.</span></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </section>
+
   </main>
 
   <aside class="chat">
@@ -990,10 +1129,10 @@
 
 <script>
 function showTab(name){
-  var views = {ops:'view-ops', stock:'view-stock', returns:'view-returns'};
-  var labels = {ops:'Операции', stock:'Остатки', returns:'Возвраты'};
+  var views = {ops:'view-ops', stock:'view-stock', returns:'view-returns', inv:'view-inv'};
+  var labels = {ops:'Операции', stock:'Остатки', returns:'Возвраты', inv:'Инвентаризация'};
   for(var k in views){ var v=document.getElementById(views[k]); if(v) v.style.display = (k===name)?'flex':'none'; }
-  ['ops','stock','returns'].forEach(function(k){
+  ['ops','stock','returns','inv'].forEach(function(k){
     var tb=document.getElementById('tab-'+k); if(tb) tb.classList.toggle('active', k===name);
     var sb=document.getElementById('sub-'+k); if(sb) sb.classList.toggle('active', k===name);
   });
