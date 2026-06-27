@@ -1,7 +1,7 @@
 """HTTP-API модуля WMS. Монтируется под префиксом ``/wms``."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,6 +14,7 @@ from core.runtime.deps import get_core, get_session
 from core.runtime.funnel import FunnelBoardOut, FunnelCard, build_board
 from core.services.auth import require_permission
 from modules.wms.models import (
+    CycleCountPlan,
     InventoryCount,
     InventoryLine,
     Location,
@@ -30,6 +31,9 @@ from modules.wms.schemas import (
     AlertsOut,
     BalanceRow,
     BalancesOut,
+    CyclePlanCreate,
+    CyclePlanOut,
+    CyclePlanUpdate,
     InventoryCountCreate,
     InventoryCountOut,
     InventoryDetailOut,
@@ -618,6 +622,34 @@ async def _snapshot_from_1c(
     return Decimal(str(row["qty_available"])), cost
 
 
+async def _fill_inventory_from_1c(session: AsyncSession, core: Core, doc: InventoryCount) -> None:
+    """Заполнить документ инвентаризации строками ожидаемого из 1С (по складу документа).
+
+    Уже добавленные SKU пропускаются (идемпотентно). Без commit — фиксирует вызывающий.
+    # ponytail: N+1 по шлюзу; bulk-чтение остатков на StockGateway — согласовать с СИНК.
+    """
+    existing = set(
+        (
+            await session.execute(
+                select(InventoryLine.sku_code).where(InventoryLine.count_id == doc.id)
+            )
+        ).scalars().all()
+    )
+    skus = (await session.execute(select(Sku).order_by(Sku.code))).scalars().all()
+    for sku in skus:
+        if sku.code in existing:
+            continue
+        expected, cost = await _snapshot_from_1c(core, session, sku.code, doc.warehouse)
+        if expected == 0 and cost is None:
+            continue  # по этому складу остатка нет — в документ не тянем
+        session.add(
+            InventoryLine(
+                count_id=doc.id, sku_code=sku.code, sku_title=sku.title, unit=sku.unit,
+                expected_qty=expected, unit_cost=cost,
+            )
+        )
+
+
 @router.get("/inventory", response_model=list[InventoryCountOut])
 async def list_inventory(
     status: str | None = None,
@@ -678,30 +710,7 @@ async def populate_inventory(
     doc = await _open_count(session, count_id)
     if core.services.stock is None:
         raise HTTPException(status_code=503, detail="Шлюз остатков (1С/integrations) не подключён")
-    existing = set(
-        (
-            await session.execute(
-                select(InventoryLine.sku_code).where(InventoryLine.count_id == count_id)
-            )
-        ).scalars().all()
-    )
-    skus = (await session.execute(select(Sku).order_by(Sku.code))).scalars().all()
-    for sku in skus:
-        if sku.code in existing:
-            continue
-        expected, cost = await _snapshot_from_1c(core, session, sku.code, doc.warehouse)
-        if expected == 0 and cost is None:
-            continue  # по этому складу остатка нет — в документ не тянем
-        session.add(
-            InventoryLine(
-                count_id=count_id,
-                sku_code=sku.code,
-                sku_title=sku.title,
-                unit=sku.unit,
-                expected_qty=expected,
-                unit_cost=cost,
-            )
-        )
+    await _fill_inventory_from_1c(session, core, doc)
     await session.commit()
     return await _inventory_detail(session, doc)
 
@@ -1246,3 +1255,79 @@ async def alerts(
         )
     rows.sort(key=lambda r: r.deficit, reverse=True)
     return AlertsOut(rows=rows, gateway=True)
+
+
+# --- Цикл-каунт: расписание периодического пересчёта (дисциплина инвентаризации) ---
+
+
+@router.get("/cycle-plans", response_model=list[CyclePlanOut])
+async def list_cycle_plans(
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.read")),
+):
+    """Планы циклического пересчёта (по дате срока, раньше — выше)."""
+    return (
+        await session.execute(select(CycleCountPlan).order_by(CycleCountPlan.next_due_date))
+    ).scalars().all()
+
+
+@router.post("/cycle-plans", response_model=CyclePlanOut, status_code=201)
+async def create_cycle_plan(
+    payload: CyclePlanCreate,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+):
+    """Создать план цикл-каунта."""
+    plan = CycleCountPlan(**payload.model_dump())
+    session.add(plan)
+    await session.commit()
+    await session.refresh(plan)
+    return plan
+
+
+@router.patch("/cycle-plans/{plan_id}", response_model=CyclePlanOut)
+async def update_cycle_plan(
+    plan_id: int,
+    payload: CyclePlanUpdate,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+):
+    """Изменить план (периодичность/дата/зона/активность)."""
+    plan = await session.get(CycleCountPlan, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="План не найден")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(plan, field, value)
+    await session.commit()
+    await session.refresh(plan)
+    return plan
+
+
+@router.post("/cycle-plans/{plan_id}/run", response_model=InventoryDetailOut)
+async def run_cycle_plan(
+    plan_id: int,
+    session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
+    _: object = Depends(require_permission("wms.count")),
+) -> InventoryDetailOut:
+    """Запустить пересчёт по плану: создать InventoryCount, заполнить из 1С, сдвинуть срок.
+
+    Зона плана пока информативна (1С-зеркало — по складу); фиксируется в примечании.
+    # ponytail: зональный пересчёт по WMS-ячейкам — когда понадобится точность по зоне.
+    """
+    plan = await session.get(CycleCountPlan, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="План не найден")
+    if core.services.stock is None:
+        raise HTTPException(status_code=503, detail="Шлюз остатков (1С/integrations) не подключён")
+    note = f"Цикл-каунт {plan.warehouse}" + (f" / зона {plan.zone}" if plan.zone else "")
+    doc = InventoryCount(warehouse=plan.warehouse, note=note, status="open")
+    session.add(doc)
+    await session.flush()
+    doc.number = f"ИНВ-2026-{doc.id:04d}"
+    await _fill_inventory_from_1c(session, core, doc)
+    plan.last_run_at = datetime.utcnow()
+    plan.next_due_date = date.today() + timedelta(days=plan.cadence_days)
+    await session.commit()
+    await session.refresh(doc)
+    return await _inventory_detail(session, doc)

@@ -1,10 +1,10 @@
 """ORM-модели модуля WMS (схема ``wms.*``)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.db.base import Base
@@ -228,3 +228,25 @@ class StockThreshold(Base):
         Numeric(14, 2), default=Decimal("0"), server_default="0"
     )
     active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+
+
+class CycleCountPlan(Base):
+    """План циклического пересчёта (cycle count): периодическая инвентаризация зоны/склада.
+
+    ``run`` создаёт документ ``InventoryCount`` по складу плана, заполняет из 1С и сдвигает
+    ``next_due_date`` на ``cadence_days``. WMS в 1С не пишет.
+    """
+
+    __tablename__ = "cycle_count_plan"
+    __table_args__ = {"schema": "wms"}
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    warehouse: Mapped[str] = mapped_column(
+        String(128), default="Главный", server_default="Главный"
+    )
+    zone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cadence_days: Mapped[int] = mapped_column(Integer, default=30, server_default="30")
+    next_due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    abc_class: Mapped[str | None] = mapped_column(String(1), nullable=True)

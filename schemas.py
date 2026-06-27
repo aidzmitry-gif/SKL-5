@@ -1,7 +1,7 @@
 """Pydantic-схемы модуля WMS."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict
 
@@ -395,3 +395,36 @@ class AlertRow(BaseModel):
 class AlertsOut(BaseModel):
     rows: list[AlertRow]  # сорт. по дефициту убыв.
     gateway: bool
+
+
+# --- Цикл-каунт (расписание периодического пересчёта) ---
+
+
+class CyclePlanCreate(BaseModel):
+    warehouse: str = "Главный"
+    zone: str | None = None
+    cadence_days: int = 30
+    next_due_date: date | None = None
+    active: bool = True
+    abc_class: str | None = None
+
+
+class CyclePlanUpdate(BaseModel):
+    cadence_days: int | None = None
+    next_due_date: date | None = None
+    active: bool | None = None
+    zone: str | None = None
+    abc_class: str | None = None
+
+
+class CyclePlanOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    warehouse: str
+    zone: str | None
+    cadence_days: int
+    next_due_date: date | None
+    last_run_at: datetime | None
+    active: bool
+    abc_class: str | None
