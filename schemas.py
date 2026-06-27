@@ -428,3 +428,19 @@ class CyclePlanOut(BaseModel):
     last_run_at: datetime | None
     active: bool
     abc_class: str | None
+
+
+# --- Дашборд склада ---
+
+
+class DashboardOut(BaseModel):
+    receipts_pending_qc: int  # приёмки в очереди QC
+    tasks_putaway_open: int  # открытые задачи размещения
+    tasks_pick_open: int  # открытые задачи подбора
+    alerts_count: int  # SKU ниже порога (low-stock)
+    inventories_open: int  # открытые инвентаризации
+    recon_max_diff_value: float  # макс |расхождение в деньгах| (сверка с 1С)
+    recon_total_diff_value: float  # суммарное расхождение в деньгах
+    movements_today_in: float  # приход за сегодня
+    movements_today_out: float  # расход за сегодня
+    gateway: bool  # 1С-зависимые метрики (alerts/recon) валидны

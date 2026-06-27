@@ -34,6 +34,7 @@ from modules.wms.schemas import (
     CyclePlanCreate,
     CyclePlanOut,
     CyclePlanUpdate,
+    DashboardOut,
     InventoryCountCreate,
     InventoryCountOut,
     InventoryDetailOut,
@@ -1331,3 +1332,62 @@ async def run_cycle_plan(
     await session.commit()
     await session.refresh(doc)
     return await _inventory_detail(session, doc)
+
+
+# --- Дашборд склада: живая сводка для главного экрана ---
+
+
+@router.get("/dashboard", response_model=DashboardOut)
+async def dashboard(
+    session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
+    _: object = Depends(require_permission("wms.read")),
+) -> DashboardOut:
+    """Сводка одним набором запросов: очередь QC, открытые задачи/инвентаризации, low-stock,
+    последняя сверка с 1С (макс/сумма расхождения в деньгах), движения за сегодня."""
+    async def _count(model, *conds) -> int:
+        stmt = select(func.count()).select_from(model)
+        for c in conds:
+            stmt = stmt.where(c)
+        return int((await session.execute(stmt)).scalar() or 0)
+
+    pending_qc = await _count(Receipt, Receipt.status == "pending_qc")
+    putaway_open = await _count(Task, Task.kind == "putaway", Task.status.in_(("open", "in_progress")))
+    pick_open = await _count(Task, Task.kind == "pick", Task.status.in_(("open", "in_progress")))
+    inv_open = await _count(InventoryCount, InventoryCount.status == "open")
+
+    # 1С-зависимые метрики — переиспользуем готовую логику (gateway внутри)
+    al = await alerts(session=session, core=core, _=None)
+    rec = await reconciliation(warehouse=None, session=session, core=core, _=None)
+    recon_max = max((abs(r.diff_value) for r in rec.rows if r.diff_value is not None), default=0.0)
+
+    # движения за сегодня (приход/расход)
+    today = date.today()
+    start = datetime(today.year, today.month, today.day)
+    in_today = (
+        await session.execute(
+            select(func.coalesce(func.sum(StockMovement.qty), 0)).where(
+                StockMovement.kind == "in", StockMovement.created_at >= start
+            )
+        )
+    ).scalar()
+    out_today = (
+        await session.execute(
+            select(func.coalesce(func.sum(StockMovement.qty), 0)).where(
+                StockMovement.kind == "out", StockMovement.created_at >= start
+            )
+        )
+    ).scalar()
+
+    return DashboardOut(
+        receipts_pending_qc=pending_qc,
+        tasks_putaway_open=putaway_open,
+        tasks_pick_open=pick_open,
+        alerts_count=len(al.rows),
+        inventories_open=inv_open,
+        recon_max_diff_value=round(recon_max, 2),
+        recon_total_diff_value=rec.total_abs_diff_value,
+        movements_today_in=float(in_today or 0),
+        movements_today_out=float(out_today or 0),
+        gateway=core.services.stock is not None,
+    )
