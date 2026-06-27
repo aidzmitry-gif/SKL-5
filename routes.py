@@ -43,6 +43,8 @@ from modules.wms.schemas import (
     ReceiptDetailOut,
     ReceiptLineOut,
     ReceiptOut,
+    ReconOut,
+    ReconRow,
     StageUpdate,
     StockMirror,
     StockMirrorRow,
@@ -1093,3 +1095,67 @@ async def pack(
     await session.refresh(out)
     await session.refresh(inn)
     return [out, inn]
+
+
+# --- Сверка теневого остатка WMS с зеркалом 1С (деньго-защита) ---
+
+
+@router.get("/reconciliation", response_model=ReconOut)
+async def reconciliation(
+    warehouse: str | None = None,
+    session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
+    _: object = Depends(require_permission("wms.read")),
+) -> ReconOut:
+    """Сверка: оперативный остаток WMS (in−out по складу) ПРОТИВ зеркала 1С (qty_available).
+
+    diff = wms − onec; diff_value = diff × себес из 1С. Строки сортируются по |diff_value|
+    убыв. (где деньги расходятся — сверху). 1С = истина: расхождение — СИГНАЛ к разбору,
+    в 1С ничего не пишем.
+    # ponytail: N+1 по шлюзу (один вызов на SKU); bulk-чтение остатков на StockGateway —
+    # согласовать с СИНК, когда номенклатура вырастет.
+    """
+    gw = core.services.stock
+    if gw is None:
+        return ReconOut(rows=[], gateway=False, total_abs_diff_value=0.0)
+
+    signed = case((StockMovement.kind == "in", StockMovement.qty), else_=-StockMovement.qty)
+    stmt = select(
+        StockMovement.sku_code, StockMovement.warehouse, func.coalesce(func.sum(signed), 0)
+    ).group_by(StockMovement.sku_code, StockMovement.warehouse)
+    if warehouse:
+        stmt = stmt.where(StockMovement.warehouse == warehouse)
+    wms = {(code, wh): float(q) for code, wh, q in (await session.execute(stmt)).all()}
+
+    codes = {code for code, _ in wms}
+    onec: dict[tuple[str, str], tuple[float, float | None]] = {}
+    for code in codes:
+        data = await gw.stock_by_sku(session, code)
+        if not data:
+            continue
+        for r in data["rows"]:
+            if warehouse and r["warehouse"] != warehouse:
+                continue
+            onec[(code, r["warehouse"])] = (r["qty_available"], r["cost"])
+
+    titles = (
+        dict((await session.execute(select(Sku.code, Sku.title).where(Sku.code.in_(codes)))).all())
+        if codes
+        else {}
+    )
+    rows: list[ReconRow] = []
+    for key in set(wms) | set(onec):
+        code, wh = key
+        wq = wms.get(key, 0.0)
+        oq, cost = onec.get(key, (0.0, None))
+        diff = round(wq - oq, 2)
+        rows.append(
+            ReconRow(
+                sku_code=code, title=titles.get(code, ""), warehouse=wh,
+                wms_qty=wq, onec_qty=oq, diff=diff,
+                diff_value=round(diff * cost, 2) if cost is not None else None,
+            )
+        )
+    rows.sort(key=lambda r: abs(r.diff_value or 0), reverse=True)
+    total = round(sum(abs(r.diff_value) for r in rows if r.diff_value is not None), 2)
+    return ReconOut(rows=rows, gateway=True, total_abs_diff_value=total)

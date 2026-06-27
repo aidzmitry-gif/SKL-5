@@ -296,3 +296,64 @@ class QcLineDecision(BaseModel):
 class QcDecisionIn(BaseModel):
     decisions: list[QcLineDecision] = []
     decided_by: str = ""
+
+
+# --- Задачи (put-away / pick) ---
+
+
+class TaskCreate(BaseModel):
+    kind: str  # putaway | pick
+    sku_code: str
+    qty: float = 0
+    warehouse: str = "Главный"
+    from_location_id: int | None = None
+    to_location_id: int | None = None
+    doc_ref: str = ""
+    assignee: str = ""
+    priority: str = "normal"
+    note: str = ""
+
+
+class TaskUpdate(BaseModel):
+    status: str | None = None  # in_progress | done | canceled
+    assignee: str | None = None
+    to_location_id: int | None = None
+    note: str | None = None
+
+
+class TaskOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    kind: str
+    status: str
+    sku_code: str
+    qty: float
+    warehouse: str
+    from_location_id: int | None
+    to_location_id: int | None
+    doc_ref: str
+    assignee: str
+    priority: str
+    note: str
+    created_at: datetime | None = None
+    done_at: datetime | None = None
+
+
+# --- Сверка теневого остатка WMS с 1С (деньго-защита) ---
+
+
+class ReconRow(BaseModel):
+    sku_code: str
+    title: str
+    warehouse: str
+    wms_qty: float  # оперативный остаток WMS (из движений)
+    onec_qty: float  # зеркало 1С (qty_available)
+    diff: float  # wms − onec
+    diff_value: float | None  # diff × себес из 1С (деньги); None без себеса
+
+
+class ReconOut(BaseModel):
+    rows: list[ReconRow]  # сорт. по |diff_value| убыв. (где деньги расходятся — сверху)
+    gateway: bool  # шлюз 1С подключён; False → источник не доступен
+    total_abs_diff_value: float  # суммарное расхождение в деньгах (по модулю)
