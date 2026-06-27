@@ -4,14 +4,24 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.db.base import Base
 
 
 class StockMovement(Base):
-    """Движение по складу: приход/расход SKU на складе (журнал операций)."""
+    """Движение по складу: приход/расход SKU (операционный журнал WMS).
+
+    🔴 WMS НЕ источник истины остатка (1С — истина, фаза 1). Журнал ДУБЛИРУЕТ факт
+    движения (своя теневая книга): наполняется и напрямую (операции), и реактивно —
+    событиями (приёмка/резерв/снятие). Оперативный остаток = знаковая сумма движений
+    (in +, out −), его положено СВЕРЯТЬ с 1С, а не считать истиной.
+
+    ``reason`` — бизнес-причина (receipt|shipment|reserve|release|transfer|adjustment);
+    ``location_id`` — ячейка (адресное хранение); ``batch_ref`` — партия; ``doc_ref`` —
+    ссылка на документ-источник / связка пары перемещения.
+    """
 
     __tablename__ = "stock_movement"
     __table_args__ = {"schema": "wms"}
@@ -21,6 +31,11 @@ class StockMovement(Base):
     warehouse: Mapped[str] = mapped_column(String(128), default="Главный", server_default="Главный")
     kind: Mapped[str] = mapped_column(String(8), default="in", server_default="in")  # in|out
     qty: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"), server_default="0")
+    reason: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    location_id: Mapped[int | None] = mapped_column(ForeignKey("wms.location.id"), nullable=True)
+    batch_ref: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    doc_ref: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    note: Mapped[str] = mapped_column(String(255), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -94,3 +109,22 @@ class InventoryLine(Base):
     unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     note: Mapped[str] = mapped_column(String(512), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class Location(Base):
+    """Топология склада: зона/ячейка (адресное хранение). Операционные данные WMS.
+
+    Не мастер-данные и не остатки — лишь адреса хранения для привязки движений.
+    """
+
+    __tablename__ = "location"
+    __table_args__ = {"schema": "wms"}
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    warehouse: Mapped[str] = mapped_column(
+        String(128), default="Главный", server_default="Главный"
+    )
+    zone: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    code: Mapped[str] = mapped_column(String(64))  # ячейка, напр. «A-01-02»
+    title: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")

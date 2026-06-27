@@ -4,7 +4,7 @@ from __future__ import annotations
 from core.runtime.contract import ModuleContract, Widget
 from core.runtime.core import Core
 from modules.wms import routes
-from modules.wms.events import on_goods_received, on_stock_reserved
+from modules.wms.events import on_goods_received, on_stock_released, on_stock_reserved
 from modules.wms.permissions import PERMISSIONS, ROLES
 
 
@@ -18,6 +18,7 @@ class WmsModule(ModuleContract):
         # межмодульные связи склада (§2.5): резерв под заказ → расход;
         # приёмка из закупок/производства → приход
         core.subscribe("sales.stock.reserved", on_stock_reserved)
+        core.subscribe("sales.stock.released", on_stock_released)  # снятие резерва → возврат
         core.subscribe("procurement.received", on_goods_received)
         core.subscribe("production.completed", on_goods_received)
         core.declare_permissions(PERMISSIONS)

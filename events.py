@@ -11,7 +11,7 @@ from modules.wms.models import StockMovement
 
 
 async def on_stock_reserved(payload: dict, ctx) -> None:
-    """Резерв под заказ (sales) → расходное движение по складу."""
+    """Резерв под заказ (sales) → расходное движение по складу (reason=reserve)."""
     if ctx is None:
         return
     for item in payload.get("items", []):
@@ -21,12 +21,29 @@ async def on_stock_reserved(payload: dict, ctx) -> None:
                 warehouse=item.get("warehouse", "Главный"),
                 kind="out",
                 qty=Decimal(str(item.get("qty", 0))),
+                reason="reserve",
+            )
+        )
+
+
+async def on_stock_released(payload: dict, ctx) -> None:
+    """Снятие резерва (sales) → приходное движение (возврат доступности, reason=release)."""
+    if ctx is None:
+        return
+    for item in payload.get("items", []):
+        ctx.session.add(
+            StockMovement(
+                sku_code=item.get("sku_code", ""),
+                warehouse=item.get("warehouse", "Главный"),
+                kind="in",
+                qty=Decimal(str(item.get("qty", 0))),
+                reason="release",
             )
         )
 
 
 async def on_goods_received(payload: dict, ctx) -> None:
-    """Приёмка из закупок/производства → приходное движение по складу."""
+    """Приёмка из закупок/производства → приходное движение по складу (reason=receipt)."""
     if ctx is None:
         return
     ctx.session.add(
@@ -35,5 +52,6 @@ async def on_goods_received(payload: dict, ctx) -> None:
             warehouse=payload.get("warehouse", "Главный"),
             kind="in",
             qty=Decimal(str(payload.get("qty", 0))),
+            reason="receipt",
         )
     )

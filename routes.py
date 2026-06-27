@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.domain.models import Sku
@@ -13,8 +13,17 @@ from core.runtime.core import Core
 from core.runtime.deps import get_core, get_session
 from core.runtime.funnel import FunnelBoardOut, FunnelCard, build_board
 from core.services.auth import require_permission
-from modules.wms.models import InventoryCount, InventoryLine, StockMovement, WarehouseOp
+from modules.wms.models import (
+    InventoryCount,
+    InventoryLine,
+    Location,
+    StockMovement,
+    WarehouseOp,
+)
 from modules.wms.schemas import (
+    AdjustmentIn,
+    BalanceRow,
+    BalancesOut,
     InventoryCountCreate,
     InventoryCountOut,
     InventoryDetailOut,
@@ -22,11 +31,16 @@ from modules.wms.schemas import (
     InventoryLineOut,
     InventoryLineUpdate,
     InventorySummary,
+    LocationCreate,
+    LocationOut,
+    LocationUpdate,
+    MovementOpIn,
     StageUpdate,
     StockMirror,
     StockMirrorRow,
     StockMovementCreate,
     StockMovementOut,
+    TransferIn,
     WarehouseOpCreate,
     WarehouseOpOut,
 )
@@ -39,28 +53,282 @@ router = APIRouter(tags=["wms"])
 
 
 @router.get("/movements", response_model=list[StockMovementOut])
-async def list_movements(session: AsyncSession = Depends(get_session)):
-    """Движения по складу (приход/расход)."""
-    return (
-        await session.execute(select(StockMovement).order_by(StockMovement.id.desc()))
-    ).scalars().all()
+async def list_movements(
+    sku: str | None = None,
+    warehouse: str | None = None,
+    reason: str | None = None,
+    limit: int = 200,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.read")),
+):
+    """Движения по складу (приход/расход), новые первыми; опц. фильтры."""
+    stmt = select(StockMovement).order_by(StockMovement.id.desc())
+    if sku and sku.strip():
+        stmt = stmt.where(StockMovement.sku_code.ilike(f"%{sku.strip()}%"))
+    if warehouse:
+        stmt = stmt.where(StockMovement.warehouse == warehouse)
+    if reason:
+        stmt = stmt.where(StockMovement.reason == reason)
+    stmt = stmt.limit(max(1, min(limit, 1000)))
+    return (await session.execute(stmt)).scalars().all()
 
 
 @router.post("/movements", response_model=StockMovementOut, status_code=201)
 async def create_movement(
-    payload: StockMovementCreate, session: AsyncSession = Depends(get_session)
+    payload: StockMovementCreate,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
 ):
-    """Зафиксировать движение по складу."""
+    """Зафиксировать движение по складу (низкоуровневое; обычно — операции ниже)."""
     obj = StockMovement(
         sku_code=payload.sku_code,
         warehouse=payload.warehouse,
         kind=payload.kind,
         qty=Decimal(str(payload.qty)),
+        reason=payload.reason,
+        location_id=payload.location_id,
+        batch_ref=payload.batch_ref,
+        doc_ref=payload.doc_ref,
+        note=payload.note,
     )
     session.add(obj)
     await session.commit()
     await session.refresh(obj)
     return obj
+
+
+# --- Складские операции: всё пишется движениями в ОПЕРАЦИОННЫЙ журнал WMS (дубль факта;
+#     1С остаётся истиной остатка — мы её не трогаем). ---
+
+
+@router.post("/receipt", response_model=StockMovementOut, status_code=201)
+async def receipt(
+    payload: MovementOpIn,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+):
+    """Приёмка: приходное движение (reason=receipt)."""
+    obj = StockMovement(
+        sku_code=payload.sku_code,
+        warehouse=payload.warehouse,
+        kind="in",
+        qty=Decimal(str(payload.qty)),
+        reason="receipt",
+        location_id=payload.location_id,
+        batch_ref=payload.batch_ref,
+        doc_ref=payload.doc_ref,
+        note=payload.note,
+    )
+    session.add(obj)
+    await session.commit()
+    await session.refresh(obj)
+    return obj
+
+
+@router.post("/shipment", response_model=StockMovementOut, status_code=201)
+async def shipment(
+    payload: MovementOpIn,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+):
+    """Отгрузка: расходное движение (reason=shipment)."""
+    obj = StockMovement(
+        sku_code=payload.sku_code,
+        warehouse=payload.warehouse,
+        kind="out",
+        qty=Decimal(str(payload.qty)),
+        reason="shipment",
+        location_id=payload.location_id,
+        batch_ref=payload.batch_ref,
+        doc_ref=payload.doc_ref,
+        note=payload.note,
+    )
+    session.add(obj)
+    await session.commit()
+    await session.refresh(obj)
+    return obj
+
+
+@router.post("/transfer", response_model=list[StockMovementOut], status_code=201)
+async def transfer(
+    payload: TransferIn,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+) -> list[StockMovement]:
+    """Перемещение: пара движений out@from + in@to, связанных одним doc_ref (TRF-…)."""
+    qty = Decimal(str(payload.qty))
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
+    if payload.from_location_id == payload.to_location_id:
+        raise HTTPException(status_code=400, detail="Источник и назначение совпадают")
+    out = StockMovement(
+        sku_code=payload.sku_code, warehouse=payload.warehouse, kind="out", qty=qty,
+        reason="transfer", location_id=payload.from_location_id,
+        batch_ref=payload.batch_ref, note=payload.note,
+    )
+    inn = StockMovement(
+        sku_code=payload.sku_code, warehouse=payload.warehouse, kind="in", qty=qty,
+        reason="transfer", location_id=payload.to_location_id,
+        batch_ref=payload.batch_ref, note=payload.note,
+    )
+    session.add_all([out, inn])
+    await session.flush()
+    ref = f"TRF-{out.id:05d}"
+    out.doc_ref = ref
+    inn.doc_ref = ref
+    await session.commit()
+    await session.refresh(out)
+    await session.refresh(inn)
+    return [out, inn]
+
+
+@router.post("/adjustment", response_model=StockMovementOut, status_code=201)
+async def adjustment(
+    payload: AdjustmentIn,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+):
+    """Ручная коррекция остатка WMS: qty знаковая (+ излишек → in, − недостача → out).
+
+    Правит только теневой журнал WMS — остатки 1С не меняются (1С = истина, фаза 1).
+    """
+    qty = Decimal(str(payload.qty))
+    if qty == 0:
+        raise HTTPException(status_code=400, detail="Коррекция на ноль не имеет смысла")
+    obj = StockMovement(
+        sku_code=payload.sku_code,
+        warehouse=payload.warehouse,
+        kind="in" if qty > 0 else "out",
+        qty=abs(qty),
+        reason="adjustment",
+        location_id=payload.location_id,
+        batch_ref=payload.batch_ref,
+        note=payload.note,
+    )
+    session.add(obj)
+    await session.commit()
+    await session.refresh(obj)
+    return obj
+
+
+# --- Топология склада: зоны/ячейки (адресное хранение) ---
+
+
+@router.get("/locations", response_model=list[LocationOut])
+async def list_locations(
+    warehouse: str | None = None,
+    active: bool | None = None,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.read")),
+):
+    """Ячейки склада (зона → код), сортировка по складу/зоне/коду."""
+    stmt = select(Location).order_by(Location.warehouse, Location.zone, Location.code)
+    if warehouse:
+        stmt = stmt.where(Location.warehouse == warehouse)
+    if active is not None:
+        stmt = stmt.where(Location.is_active == active)
+    return (await session.execute(stmt)).scalars().all()
+
+
+@router.post("/locations", response_model=LocationOut, status_code=201)
+async def create_location(
+    payload: LocationCreate,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+):
+    """Создать ячейку/зону хранения."""
+    loc = Location(**payload.model_dump())
+    session.add(loc)
+    await session.commit()
+    await session.refresh(loc)
+    return loc
+
+
+@router.patch("/locations/{loc_id}", response_model=LocationOut)
+async def update_location(
+    loc_id: int,
+    payload: LocationUpdate,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+):
+    """Переименовать/архивировать ячейку (is_active=false — скрыть из подбора)."""
+    loc = await session.get(Location, loc_id)
+    if loc is None:
+        raise HTTPException(status_code=404, detail="Ячейка не найдена")
+    if payload.title is not None:
+        loc.title = payload.title
+    if payload.is_active is not None:
+        loc.is_active = payload.is_active
+    await session.commit()
+    await session.refresh(loc)
+    return loc
+
+
+# --- Оперативный остаток (знаковая сумма движений). СВЕРЯТЬ с 1С — не истина! ---
+
+
+@router.get("/balances", response_model=BalancesOut)
+async def balances(
+    sku: str | None = None,
+    warehouse: str | None = None,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.read")),
+) -> BalancesOut:
+    """Оперативный остаток WMS из движений: in − out по (SKU, склад, ячейка, партия).
+
+    Это ТЕНЕВОЙ остаток (дубль движений), его положено сверять с 1С (истина остатка).
+    Отрицательные значения = аномалия журнала (сигнал к разбору).
+    """
+    signed = case((StockMovement.kind == "in", StockMovement.qty), else_=-StockMovement.qty)
+    stmt = (
+        select(
+            StockMovement.sku_code,
+            StockMovement.warehouse,
+            StockMovement.location_id,
+            StockMovement.batch_ref,
+            func.coalesce(func.sum(signed), 0),
+        )
+        .group_by(
+            StockMovement.sku_code,
+            StockMovement.warehouse,
+            StockMovement.location_id,
+            StockMovement.batch_ref,
+        )
+    )
+    if sku and sku.strip():
+        stmt = stmt.where(StockMovement.sku_code.ilike(f"%{sku.strip()}%"))
+    if warehouse:
+        stmt = stmt.where(StockMovement.warehouse == warehouse)
+    rows = (await session.execute(stmt)).all()
+
+    sku_codes = {r[0] for r in rows}
+    loc_ids = {r[2] for r in rows if r[2] is not None}
+    titles = (
+        dict((await session.execute(select(Sku.code, Sku.title).where(Sku.code.in_(sku_codes)))).all())
+        if sku_codes
+        else {}
+    )
+    loc_codes = (
+        dict(
+            (await session.execute(select(Location.id, Location.code).where(Location.id.in_(loc_ids)))).all()
+        )
+        if loc_ids
+        else {}
+    )
+    out_rows = [
+        BalanceRow(
+            sku_code=code,
+            sku_title=titles.get(code, ""),
+            warehouse=wh,
+            location_id=loc_id,
+            location_code=loc_codes.get(loc_id, "") if loc_id is not None else "",
+            batch_ref=batch or "",
+            qty=float(qty),
+        )
+        for code, wh, loc_id, batch, qty in rows
+    ]
+    out_rows.sort(key=lambda r: (r.sku_code, r.location_code, r.batch_ref))
+    return BalancesOut(rows=out_rows, sku_count=len({r.sku_code for r in out_rows}))
 
 
 # --- Остатки по складам: зеркало 1С (read-only через шлюз core.services.stock) ---
@@ -476,12 +744,38 @@ async def complete_inventory(
     session: AsyncSession = Depends(get_session),
     _: object = Depends(require_permission("wms.count")),
 ):
-    """Провести (заморозить) инвентаризацию: статус ``done`` + время.
+    """Провести (заморозить) инвентаризацию: статус ``done`` + коррекция теневого журнала.
 
-    ⚠️ Остатки 1С НЕ корректируются — это решение владельца (фаза 2). Документ лишь
-    фиксирует расхождения как факт для разбора (недостача = сигнал безопасности/денег).
+    Для каждой посчитанной строки с расхождением пишется движение ``adjustment`` в
+    ОПЕРАЦИОННЫЙ журнал WMS (in — излишек, out — недостача), чтобы теневой остаток склада
+    сошёлся с фактом пересчёта.
+    ⚠️ Остатки 1С НЕ корректируются — это решение владельца (фаза 2). 1С остаётся истиной;
+    документ лишь фиксирует расхождения как факт и правит СВОЙ журнал.
     """
     doc = await _open_count(session, count_id)
+    lines = (
+        await session.execute(
+            select(InventoryLine).where(InventoryLine.count_id == count_id)
+        )
+    ).scalars().all()
+    for line in lines:
+        if line.counted_qty is None:
+            continue
+        variance = line.counted_qty - line.expected_qty
+        if variance == 0:
+            continue
+        session.add(
+            StockMovement(
+                sku_code=line.sku_code,
+                warehouse=doc.warehouse,
+                kind="in" if variance > 0 else "out",
+                qty=abs(variance),
+                reason="adjustment",
+                batch_ref="",
+                doc_ref=doc.number,
+                note="инвентаризация",
+            )
+        )
     doc.status = "done"
     doc.completed_at = datetime.utcnow()
     await session.commit()

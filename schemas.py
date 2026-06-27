@@ -11,6 +11,11 @@ class StockMovementCreate(BaseModel):
     warehouse: str = "Главный"
     kind: str = "in"  # in|out
     qty: float = 0
+    reason: str = ""
+    location_id: int | None = None
+    batch_ref: str = ""
+    doc_ref: str = ""
+    note: str = ""
 
 
 class StockMovementOut(BaseModel):
@@ -21,6 +26,94 @@ class StockMovementOut(BaseModel):
     warehouse: str
     kind: str
     qty: float
+    reason: str
+    location_id: int | None
+    batch_ref: str
+    doc_ref: str
+    note: str
+    created_at: datetime | None = None
+
+
+# --- Складские операции (приёмка/отгрузка/перемещение/коррекция) ---
+
+
+class MovementOpIn(BaseModel):
+    """Приёмка/отгрузка: kind и reason задаёт роут, qty — положительная величина."""
+
+    sku_code: str
+    qty: float
+    warehouse: str = "Главный"
+    location_id: int | None = None
+    batch_ref: str = ""
+    doc_ref: str = ""
+    note: str = ""
+
+
+class TransferIn(BaseModel):
+    """Перемещение: пара движений out@from + in@to, связаны doc_ref."""
+
+    sku_code: str
+    qty: float
+    warehouse: str = "Главный"
+    from_location_id: int | None = None
+    to_location_id: int | None = None
+    batch_ref: str = ""
+    note: str = ""
+
+
+class AdjustmentIn(BaseModel):
+    """Ручная коррекция: qty знаковая (+ излишек → in, − недостача → out)."""
+
+    sku_code: str
+    qty: float
+    warehouse: str = "Главный"
+    location_id: int | None = None
+    batch_ref: str = ""
+    note: str = ""
+
+
+# --- Топология склада (зоны/ячейки) ---
+
+
+class LocationCreate(BaseModel):
+    warehouse: str = "Главный"
+    zone: str = ""
+    code: str
+    title: str = ""
+
+
+class LocationUpdate(BaseModel):
+    title: str | None = None
+    is_active: bool | None = None
+
+
+class LocationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    warehouse: str
+    zone: str
+    code: str
+    title: str
+    is_active: bool
+
+
+# --- Оперативный остаток (из движений; СВЕРЯТЬ с 1С, не истина) ---
+
+
+class BalanceRow(BaseModel):
+    sku_code: str
+    sku_title: str
+    warehouse: str
+    location_id: int | None
+    location_code: str  # "" — без ячейки
+    batch_ref: str
+    qty: float  # знаковая сумма движений: in − out
+
+
+class BalancesOut(BaseModel):
+    rows: list[BalanceRow]
+    sku_count: int
 
 
 class WarehouseOpCreate(BaseModel):
