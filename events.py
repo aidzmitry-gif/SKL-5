@@ -10,21 +10,33 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from core.domain.models import Sku
-from modules.wms.models import Receipt, ReceiptLine, StockMovement
+from modules.wms.models import Receipt, ReceiptLine, StockMovement, Task
 
 
 async def on_stock_reserved(payload: dict, ctx) -> None:
-    """Резерв под заказ (sales) → расходное движение по складу (reason=reserve)."""
+    """Резерв под заказ (sales) → расходное движение reason=reserve + pick-задача под позицию.
+
+    Резерв оставляем как есть (теневой расход), но дополнительно рождаем заявку на подбор
+    (pick-задача), чтобы замкнуть отгрузку в волну подбора. ``doc_ref`` берём из payload
+    (документ/сделка) для связи отгрузки с задачами.
+    """
     if ctx is None:
         return
+    doc_ref = payload.get("doc_ref") or payload.get("entity_ref") or ""
     for item in payload.get("items", []):
+        sku_code = item.get("sku_code", "")
+        warehouse = item.get("warehouse", "Главный")
+        qty = Decimal(str(item.get("qty", 0)))
         ctx.session.add(
             StockMovement(
-                sku_code=item.get("sku_code", ""),
-                warehouse=item.get("warehouse", "Главный"),
-                kind="out",
-                qty=Decimal(str(item.get("qty", 0))),
-                reason="reserve",
+                sku_code=sku_code, warehouse=warehouse, kind="out", qty=qty, reason="reserve",
+                doc_ref=doc_ref,
+            )
+        )
+        ctx.session.add(
+            Task(
+                kind="pick", sku_code=sku_code, qty=qty, warehouse=warehouse,
+                doc_ref=doc_ref, status="open",
             )
         )
 

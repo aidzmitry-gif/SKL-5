@@ -1058,3 +1058,38 @@ async def update_task(
     await session.commit()
     await session.refresh(t)
     return t
+
+
+@router.post("/pack", response_model=list[StockMovementOut], status_code=201)
+async def pack(
+    payload: MovementOpIn,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+) -> list[StockMovement]:
+    """Упаковка подобранного: balance-нейтральная пара движений reason=pack (перевод в зону
+    «готово к отгрузке», ``location_id`` — упаковочная ячейка). Связь с волной — по ``doc_ref``.
+
+    Нейтральна для оперативного остатка (out из подбора + in в упаковку) — физический расход
+    даёт отгрузка (/shipment reason=shipment).
+    """
+    qty = Decimal(str(payload.qty))
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
+    ref = payload.doc_ref or ""
+    out = StockMovement(
+        sku_code=payload.sku_code, warehouse=payload.warehouse, kind="out", qty=qty,
+        reason="pack", batch_ref=payload.batch_ref, doc_ref=ref, note=payload.note,
+    )
+    inn = StockMovement(
+        sku_code=payload.sku_code, warehouse=payload.warehouse, kind="in", qty=qty,
+        reason="pack", location_id=payload.location_id, batch_ref=payload.batch_ref,
+        doc_ref=ref, note=payload.note,
+    )
+    session.add_all([out, inn])
+    await session.flush()
+    if not ref:
+        out.doc_ref = inn.doc_ref = f"PACK-{out.id:05d}"
+    await session.commit()
+    await session.refresh(out)
+    await session.refresh(inn)
+    return [out, inn]
