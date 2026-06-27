@@ -20,6 +20,7 @@ from modules.wms.models import (
     Receipt,
     ReceiptLine,
     StockMovement,
+    Task,
     WarehouseOp,
 )
 from modules.wms.schemas import (
@@ -47,6 +48,9 @@ from modules.wms.schemas import (
     StockMirrorRow,
     StockMovementCreate,
     StockMovementOut,
+    TaskCreate,
+    TaskOut,
+    TaskUpdate,
     TransferIn,
     WarehouseOpCreate,
     WarehouseOpOut,
@@ -953,8 +957,104 @@ async def accept_receipt(
                     batch_ref=line.batch_ref,
                 )
             )
+            # авто-задача размещения: из приёмной ячейки в постоянную (выбирается при завершении)
+            session.add(
+                Task(
+                    kind="putaway",
+                    sku_code=line.sku_code,
+                    qty=accepted,
+                    warehouse=r.warehouse,
+                    from_location_id=line.location_id,
+                    doc_ref=r.number,
+                    status="open",
+                )
+            )
     r.status = "accepted"
     r.decided_at = datetime.utcnow()
     await session.commit()
     await session.refresh(r)
     return await _receipt_detail(session, r)
+
+
+# --- Задачи кладовщику: размещение (put-away) и подбор (pick) ---
+
+
+@router.get("/tasks", response_model=list[TaskOut])
+async def list_tasks(
+    kind: str | None = None,
+    status: str | None = None,
+    assignee: str | None = None,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.read")),
+):
+    """Задачи склада (DESC по id); фильтры kind/status/assignee."""
+    stmt = select(Task).order_by(Task.id.desc())
+    if kind:
+        stmt = stmt.where(Task.kind == kind)
+    if status:
+        stmt = stmt.where(Task.status == status)
+    if assignee:
+        stmt = stmt.where(Task.assignee == assignee)
+    return (await session.execute(stmt)).scalars().all()
+
+
+@router.post("/tasks", response_model=TaskOut, status_code=201)
+async def create_task(
+    payload: TaskCreate,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+):
+    """Создать задачу (put-away/pick) вручную."""
+    t = Task(**payload.model_dump())
+    session.add(t)
+    await session.commit()
+    await session.refresh(t)
+    return t
+
+
+@router.patch("/tasks/{task_id}", response_model=TaskOut)
+async def update_task(
+    task_id: int,
+    payload: TaskUpdate,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+):
+    """Взять в работу / завершить / отменить. Завершение пишет движение:
+    put-away → transfer приёмная→постоянная (нужна to_location), pick → out reason=pick."""
+    t = await session.get(Task, task_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+    if t.status in ("done", "canceled"):
+        raise HTTPException(status_code=409, detail="Задача уже закрыта")
+    if payload.assignee is not None:
+        t.assignee = payload.assignee
+    if payload.to_location_id is not None:
+        t.to_location_id = payload.to_location_id
+    if payload.note is not None:
+        t.note = payload.note
+    if payload.status == "in_progress":
+        t.status = "in_progress"
+    elif payload.status == "canceled":
+        t.status = "canceled"
+    elif payload.status == "done":
+        if t.kind == "putaway":
+            if t.to_location_id is None:
+                raise HTTPException(status_code=400, detail="Укажите ячейку назначения (to_location_id)")
+            ref = f"PUT-{t.id:05d}"
+            session.add_all([
+                StockMovement(sku_code=t.sku_code, warehouse=t.warehouse, kind="out", qty=t.qty,
+                              reason="transfer", location_id=t.from_location_id, doc_ref=ref),
+                StockMovement(sku_code=t.sku_code, warehouse=t.warehouse, kind="in", qty=t.qty,
+                              reason="transfer", location_id=t.to_location_id, doc_ref=ref),
+            ])
+        elif t.kind == "pick":
+            session.add(
+                StockMovement(sku_code=t.sku_code, warehouse=t.warehouse, kind="out", qty=t.qty,
+                              reason="pick", location_id=t.from_location_id,
+                              doc_ref=t.doc_ref or f"PICK-{t.id:05d}")
+            )
+        t.status = "done"
+        t.done_at = datetime.utcnow()
+    await session.commit()
+    await session.refresh(t)
+    return t

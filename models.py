@@ -174,3 +174,36 @@ class ReceiptLine(Base):
     reject_reason: Mapped[str] = mapped_column(String(255), default="", server_default="")
     location_id: Mapped[int | None] = mapped_column(ForeignKey("wms.location.id"), nullable=True)
     batch_ref: Mapped[str] = mapped_column(String(64), default="", server_default="")
+
+
+class Task(Base):
+    """Складская задача кладовщику: размещение (put-away) или подбор (pick).
+
+    put-away авто-создаётся после accept приёмки (из приёмной зоны в постоянную ячейку);
+    pick — по резерву под заказ (sales.stock.reserved). Завершение пишет движение:
+    put-away → transfer приёмная→постоянная, pick → out reason=pick.
+    """
+
+    __tablename__ = "task"
+    __table_args__ = {"schema": "wms"}
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16))  # putaway | pick
+    status: Mapped[str] = mapped_column(String(16), default="open", server_default="open")
+    sku_code: Mapped[str] = mapped_column(String(64))
+    qty: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"), server_default="0")
+    warehouse: Mapped[str] = mapped_column(
+        String(128), default="Главный", server_default="Главный"
+    )
+    from_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("wms.location.id"), nullable=True
+    )
+    to_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("wms.location.id"), nullable=True
+    )
+    doc_ref: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    assignee: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    priority: Mapped[str] = mapped_column(String(16), default="normal", server_default="normal")
+    note: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    done_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
