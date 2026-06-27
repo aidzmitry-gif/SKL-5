@@ -17,6 +17,8 @@ from modules.wms.models import (
     InventoryCount,
     InventoryLine,
     Location,
+    Receipt,
+    ReceiptLine,
     StockMovement,
     WarehouseOp,
 )
@@ -35,6 +37,11 @@ from modules.wms.schemas import (
     LocationOut,
     LocationUpdate,
     MovementOpIn,
+    QcDecisionIn,
+    ReceiptCreate,
+    ReceiptDetailOut,
+    ReceiptLineOut,
+    ReceiptOut,
     StageUpdate,
     StockMirror,
     StockMirrorRow,
@@ -781,3 +788,126 @@ async def complete_inventory(
     await session.commit()
     await session.refresh(doc)
     return doc
+
+
+# --- Приёмка с QC-гейтом: вход товара (закупка/производство/вручную). Приходное движение
+#     пишется только после accept по факту QC (D2). Событие прихода рождает pending_qc (events.py). ---
+
+
+async def _sku_title(session: AsyncSession, code: str) -> str:
+    sku = (await session.execute(select(Sku).where(Sku.code == code))).scalars().first()
+    return sku.title if sku else ""
+
+
+async def _receipt_detail(session: AsyncSession, r: Receipt) -> ReceiptDetailOut:
+    lines = (
+        await session.execute(
+            select(ReceiptLine).where(ReceiptLine.receipt_id == r.id).order_by(ReceiptLine.id)
+        )
+    ).scalars().all()
+    return ReceiptDetailOut(
+        id=r.id, number=r.number, source=r.source, entity_ref=r.entity_ref,
+        warehouse=r.warehouse, status=r.status, counterparty=r.counterparty,
+        created_at=r.created_at, decided_at=r.decided_at, decided_by=r.decided_by,
+        lines=[ReceiptLineOut.model_validate(line) for line in lines],
+    )
+
+
+@router.get("/receipts", response_model=list[ReceiptOut])
+async def list_receipts(
+    status: str | None = None,
+    warehouse: str | None = None,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.read")),
+):
+    """Документы приёмки (DESC по id); опц. фильтр по статусу/складу."""
+    stmt = select(Receipt).order_by(Receipt.id.desc())
+    if status:
+        stmt = stmt.where(Receipt.status == status)
+    if warehouse:
+        stmt = stmt.where(Receipt.warehouse == warehouse)
+    return (await session.execute(stmt)).scalars().all()
+
+
+@router.get("/receipts/{receipt_id}", response_model=ReceiptDetailOut)
+async def get_receipt(
+    receipt_id: int,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.read")),
+) -> ReceiptDetailOut:
+    """Документ приёмки со строками."""
+    r = await session.get(Receipt, receipt_id)
+    if r is None:
+        raise HTTPException(status_code=404, detail="Приёмка не найдена")
+    return await _receipt_detail(session, r)
+
+
+@router.post("/receipts", response_model=ReceiptDetailOut, status_code=201)
+async def create_receipt(
+    payload: ReceiptCreate,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+) -> ReceiptDetailOut:
+    """Ручная приёмка: документ в pending_qc + строки. Приход — после QC accept (D2)."""
+    r = Receipt(
+        source=payload.source or "manual",
+        entity_ref=payload.entity_ref,
+        warehouse=payload.warehouse,
+        counterparty=payload.counterparty,
+        status="pending_qc",
+    )
+    session.add(r)
+    await session.flush()
+    r.number = f"ПРМ-2026-{r.id:04d}"
+    for ln in payload.lines:
+        session.add(
+            ReceiptLine(
+                receipt_id=r.id,
+                sku_code=ln.sku_code,
+                sku_title=await _sku_title(session, ln.sku_code),
+                expected_qty=Decimal(str(ln.expected_qty)),
+                batch_ref=ln.batch_ref,
+                location_id=ln.location_id,
+            )
+        )
+    await session.commit()
+    await session.refresh(r)
+    return await _receipt_detail(session, r)
+
+
+@router.post("/receipts/{receipt_id}/qc", response_model=ReceiptDetailOut)
+async def qc_receipt(
+    receipt_id: int,
+    payload: QcDecisionIn,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+) -> ReceiptDetailOut:
+    """Зафиксировать решение QC по строкам (принято/брак/причина/ячейка). Без движений —
+    приход пишет accept (D2). Документ остаётся pending_qc до проведения."""
+    r = await session.get(Receipt, receipt_id)
+    if r is None:
+        raise HTTPException(status_code=404, detail="Приёмка не найдена")
+    if r.status != "pending_qc":
+        raise HTTPException(status_code=409, detail="Приёмка уже обработана")
+    lines = {
+        line.id: line
+        for line in (
+            await session.execute(
+                select(ReceiptLine).where(ReceiptLine.receipt_id == receipt_id)
+            )
+        ).scalars().all()
+    }
+    for d in payload.decisions:
+        line = lines.get(d.line_id)
+        if line is None:
+            continue  # чужая/несуществующая строка — пропускаем
+        line.accepted_qty = Decimal(str(d.accepted_qty))
+        line.rejected_qty = Decimal(str(d.rejected_qty))
+        line.reject_reason = d.reject_reason
+        if d.location_id is not None:
+            line.location_id = d.location_id
+    if payload.decided_by:
+        r.decided_by = payload.decided_by
+    await session.commit()
+    await session.refresh(r)
+    return await _receipt_detail(session, r)

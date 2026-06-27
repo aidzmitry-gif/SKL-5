@@ -232,3 +232,67 @@ class InventorySummary(BaseModel):
 class InventoryDetailOut(InventoryCountOut):
     lines: list[InventoryLineOut]
     summary: InventorySummary
+
+
+# --- Приёмка с QC-гейтом ---
+
+
+class ReceiptLineIn(BaseModel):
+    sku_code: str
+    expected_qty: float = 0
+    batch_ref: str = ""
+    location_id: int | None = None
+
+
+class ReceiptCreate(BaseModel):
+    warehouse: str = "Главный"
+    counterparty: str = ""
+    source: str = "manual"
+    entity_ref: str = ""
+    lines: list[ReceiptLineIn] = []
+
+
+class ReceiptLineOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    sku_code: str
+    sku_title: str
+    expected_qty: float
+    accepted_qty: float | None
+    rejected_qty: float | None
+    reject_reason: str
+    location_id: int | None
+    batch_ref: str
+
+
+class ReceiptOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    number: str
+    source: str
+    entity_ref: str
+    warehouse: str
+    status: str  # pending_qc | accepted | rejected | putaway_done
+    counterparty: str
+    created_at: datetime | None = None
+    decided_at: datetime | None = None
+    decided_by: str
+
+
+class ReceiptDetailOut(ReceiptOut):
+    lines: list[ReceiptLineOut]
+
+
+class QcLineDecision(BaseModel):
+    line_id: int
+    accepted_qty: float = 0
+    rejected_qty: float = 0
+    reject_reason: str = ""
+    location_id: int | None = None
+
+
+class QcDecisionIn(BaseModel):
+    decisions: list[QcLineDecision] = []
+    decided_by: str = ""

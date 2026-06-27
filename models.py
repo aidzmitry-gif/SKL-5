@@ -128,3 +128,49 @@ class Location(Base):
     code: Mapped[str] = mapped_column(String(64))  # ячейка, напр. «A-01-02»
     title: Mapped[str] = mapped_column(String(255), default="", server_default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+
+
+class Receipt(Base):
+    """Документ приёмки: вход товара (закупка/производство/вручную) с QC-гейтом.
+
+    Событие ``procurement.received``/``production.completed`` рождает приёмку в статусе
+    ``pending_qc`` — приходного движения ещё НЕТ. Приход пишется только после ``accept``
+    по фактически принятому кол-ву (брак на свободный остаток не попадает). 1С не трогаем.
+    """
+
+    __tablename__ = "receipt"
+    __table_args__ = {"schema": "wms"}
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    number: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    source: Mapped[str] = mapped_column(String(16), default="manual", server_default="manual")
+    entity_ref: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    warehouse: Mapped[str] = mapped_column(
+        String(128), default="Главный", server_default="Главный"
+    )
+    # pending_qc → accepted | rejected; после размещения → putaway_done
+    status: Mapped[str] = mapped_column(String(16), default="pending_qc", server_default="pending_qc")
+    counterparty: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    decided_by: Mapped[str] = mapped_column(String(128), default="", server_default="")
+
+
+class ReceiptLine(Base):
+    """Строка приёмки: SKU, ожидаемое, принято/брак (QC), целевая ячейка/партия."""
+
+    __tablename__ = "receipt_line"
+    __table_args__ = {"schema": "wms"}
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    receipt_id: Mapped[int] = mapped_column(ForeignKey("wms.receipt.id"))
+    sku_code: Mapped[str] = mapped_column(String(64))
+    sku_title: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    expected_qty: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), default=Decimal("0"), server_default="0"
+    )
+    accepted_qty: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    rejected_qty: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    reject_reason: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    location_id: Mapped[int | None] = mapped_column(ForeignKey("wms.location.id"), nullable=True)
+    batch_ref: Mapped[str] = mapped_column(String(64), default="", server_default="")
