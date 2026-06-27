@@ -911,3 +911,50 @@ async def qc_receipt(
     await session.commit()
     await session.refresh(r)
     return await _receipt_detail(session, r)
+
+
+@router.post("/receipts/{receipt_id}/accept", response_model=ReceiptDetailOut)
+async def accept_receipt(
+    receipt_id: int,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+) -> ReceiptDetailOut:
+    """Провести приёмку: по каждой строке с принятым кол-вом — приходное движение
+    (reason=receipt, doc_ref=номер приёмки). Брак НЕ приходуется на свободный остаток —
+    остаётся зафиксированным на строке (rejected_qty). Идемпотентно: повторный accept
+    не плодит движения (по статусу).
+    # ponytail: карантинную ячейку/движение reason=quarantine завести, когда появится
+    # физическая зона карантина; пока брак только фиксируется на строке (не в балансе).
+    """
+    r = await session.get(Receipt, receipt_id)
+    if r is None:
+        raise HTTPException(status_code=404, detail="Приёмка не найдена")
+    if r.status != "pending_qc":
+        if r.status == "accepted":
+            return await _receipt_detail(session, r)  # идемпотентно
+        raise HTTPException(status_code=409, detail=f"Нельзя провести приёмку в статусе {r.status}")
+    lines = (
+        await session.execute(
+            select(ReceiptLine).where(ReceiptLine.receipt_id == receipt_id)
+        )
+    ).scalars().all()
+    for line in lines:
+        accepted = line.accepted_qty if line.accepted_qty is not None else line.expected_qty
+        if accepted and accepted > 0:
+            session.add(
+                StockMovement(
+                    sku_code=line.sku_code,
+                    warehouse=r.warehouse,
+                    kind="in",
+                    qty=accepted,
+                    reason="receipt",
+                    doc_ref=r.number,
+                    location_id=line.location_id,
+                    batch_ref=line.batch_ref,
+                )
+            )
+    r.status = "accepted"
+    r.decided_at = datetime.utcnow()
+    await session.commit()
+    await session.refresh(r)
+    return await _receipt_detail(session, r)
