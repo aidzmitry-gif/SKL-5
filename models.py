@@ -207,3 +207,24 @@ class Task(Base):
     note: Mapped[str] = mapped_column(String(255), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     done_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class StockThreshold(Base):
+    """Порог дефицита по (SKU, склад): min_qty — минимум, reorder_qty — рекомендуемый дозаказ.
+
+    Сигнал считается на ЧТЕНИЕ против зеркала 1С (свободный остаток): WMS не пишет в 1С.
+    """
+
+    __tablename__ = "stock_threshold"
+    __table_args__ = {"schema": "wms"}
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku_code: Mapped[str] = mapped_column(String(64))
+    warehouse: Mapped[str] = mapped_column(
+        String(128), default="Главный", server_default="Главный"
+    )
+    min_qty: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"), server_default="0")
+    reorder_qty: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), default=Decimal("0"), server_default="0"
+    )
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")

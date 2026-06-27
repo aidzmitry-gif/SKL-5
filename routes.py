@@ -20,11 +20,14 @@ from modules.wms.models import (
     Receipt,
     ReceiptLine,
     StockMovement,
+    StockThreshold,
     Task,
     WarehouseOp,
 )
 from modules.wms.schemas import (
     AdjustmentIn,
+    AlertRow,
+    AlertsOut,
     BalanceRow,
     BalancesOut,
     InventoryCountCreate,
@@ -53,6 +56,8 @@ from modules.wms.schemas import (
     TaskCreate,
     TaskOut,
     TaskUpdate,
+    ThresholdCreate,
+    ThresholdOut,
     TransferIn,
     WarehouseOpCreate,
     WarehouseOpOut,
@@ -1159,3 +1164,85 @@ async def reconciliation(
     rows.sort(key=lambda r: abs(r.diff_value or 0), reverse=True)
     total = round(sum(abs(r.diff_value) for r in rows if r.diff_value is not None), 2)
     return ReconOut(rows=rows, gateway=True, total_abs_diff_value=total)
+
+
+# --- Low-stock: пороги дефицита и алерты «нужно дозаказать» (деньго-защита) ---
+
+
+@router.get("/thresholds", response_model=list[ThresholdOut])
+async def list_thresholds(
+    warehouse: str | None = None,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.read")),
+):
+    """Пороги дефицита (min/reorder) по SKU/складу."""
+    stmt = select(StockThreshold).order_by(StockThreshold.sku_code)
+    if warehouse:
+        stmt = stmt.where(StockThreshold.warehouse == warehouse)
+    return (await session.execute(stmt)).scalars().all()
+
+
+@router.post("/thresholds", response_model=ThresholdOut, status_code=201)
+async def create_threshold(
+    payload: ThresholdCreate,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+):
+    """Задать/добавить порог дефицита."""
+    t = StockThreshold(
+        sku_code=payload.sku_code, warehouse=payload.warehouse,
+        min_qty=Decimal(str(payload.min_qty)), reorder_qty=Decimal(str(payload.reorder_qty)),
+        active=payload.active,
+    )
+    session.add(t)
+    await session.commit()
+    await session.refresh(t)
+    return t
+
+
+@router.get("/alerts", response_model=AlertsOut)
+async def alerts(
+    session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
+    _: object = Depends(require_permission("wms.read")),
+) -> AlertsOut:
+    """SKU с дефицитом: свободный остаток 1С (available − reserved) ниже min_qty.
+
+    severity: out_of_stock (≤0) / below_min. Рекомендованный дозаказ = reorder_qty.
+    Источник остатка — 1С (через шлюз); WMS в 1С не пишет. Заявку в закупку отсюда НЕ
+    создаём (граница модулей) — кнопка-заглушка на фронте.
+    # ponytail: N+1 по шлюзу (вызов на активный порог); bulk-чтение — согласовать с СИНК.
+    """
+    gw = core.services.stock
+    if gw is None:
+        return AlertsOut(rows=[], gateway=False)
+    thresholds = (
+        await session.execute(select(StockThreshold).where(StockThreshold.active.is_(True)))
+    ).scalars().all()
+    codes = {t.sku_code for t in thresholds}
+    titles = (
+        dict((await session.execute(select(Sku.code, Sku.title).where(Sku.code.in_(codes)))).all())
+        if codes
+        else {}
+    )
+    rows: list[AlertRow] = []
+    for t in thresholds:
+        data = await gw.stock_by_sku(session, t.sku_code)
+        free = 0.0
+        if data:
+            for r in data["rows"]:
+                if r["warehouse"] == t.warehouse:
+                    free += r["qty_available"] - r["qty_reserved"]
+        min_qty = float(t.min_qty)
+        if free >= min_qty:
+            continue  # порог не нарушен
+        rows.append(
+            AlertRow(
+                sku_code=t.sku_code, title=titles.get(t.sku_code, ""), warehouse=t.warehouse,
+                free_qty=round(free, 2), min_qty=min_qty, deficit=round(min_qty - free, 2),
+                reorder_qty=float(t.reorder_qty),
+                severity="out_of_stock" if free <= 0 else "below_min",
+            )
+        )
+    rows.sort(key=lambda r: r.deficit, reverse=True)
+    return AlertsOut(rows=rows, gateway=True)

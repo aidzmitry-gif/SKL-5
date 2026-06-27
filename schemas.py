@@ -357,3 +357,41 @@ class ReconOut(BaseModel):
     rows: list[ReconRow]  # сорт. по |diff_value| убыв. (где деньги расходятся — сверху)
     gateway: bool  # шлюз 1С подключён; False → источник не доступен
     total_abs_diff_value: float  # суммарное расхождение в деньгах (по модулю)
+
+
+# --- Low-stock пороги и алерты ---
+
+
+class ThresholdCreate(BaseModel):
+    sku_code: str
+    warehouse: str = "Главный"
+    min_qty: float = 0
+    reorder_qty: float = 0
+    active: bool = True
+
+
+class ThresholdOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    sku_code: str
+    warehouse: str
+    min_qty: float
+    reorder_qty: float
+    active: bool
+
+
+class AlertRow(BaseModel):
+    sku_code: str
+    title: str
+    warehouse: str
+    free_qty: float  # свободный остаток 1С (available − reserved)
+    min_qty: float
+    deficit: float  # min − free (>0)
+    reorder_qty: float  # рекомендованный дозаказ
+    severity: str  # out_of_stock | below_min
+
+
+class AlertsOut(BaseModel):
+    rows: list[AlertRow]  # сорт. по дефициту убыв.
+    gateway: bool
