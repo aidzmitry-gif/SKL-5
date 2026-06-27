@@ -5,6 +5,7 @@ from core.runtime.contract import ModuleContract, Widget
 from core.runtime.core import Core
 from modules.wms import routes
 from modules.wms.events import on_goods_received, on_stock_reserved
+from modules.wms.permissions import PERMISSIONS, ROLES
 
 
 class WmsModule(ModuleContract):
@@ -19,6 +20,9 @@ class WmsModule(ModuleContract):
         core.subscribe("sales.stock.reserved", on_stock_reserved)
         core.subscribe("procurement.received", on_goods_received)
         core.subscribe("production.completed", on_goods_received)
+        core.declare_permissions(PERMISSIONS)
+        for role in ROLES:
+            core.declare_role(role)
         core.register_widget(Widget("wms", "Склад", source="wms.movements"))
 
 
