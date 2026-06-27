@@ -478,7 +478,10 @@ def _to_card(r: WarehouseOp) -> FunnelCard:
 
 
 @router.get("/ops", response_model=list[WarehouseOpOut])
-async def list_ops(session: AsyncSession = Depends(get_session)):
+async def list_ops(
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.read")),
+):
     """Складские операции (плоский список)."""
     return (
         await session.execute(select(WarehouseOp).order_by(WarehouseOp.id.desc()))
@@ -486,14 +489,21 @@ async def list_ops(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/board", response_model=FunnelBoardOut)
-async def board(session: AsyncSession = Depends(get_session)) -> FunnelBoardOut:
+async def board(
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.read")),
+) -> FunnelBoardOut:
     """Воронка операций: складские операции сгруппированы по стадиям цикла."""
     rows = (await session.execute(select(WarehouseOp))).scalars().all()
     return build_board(STAGES, rows, _to_card)
 
 
 @router.post("/ops", response_model=WarehouseOpOut, status_code=201)
-async def create_op(payload: WarehouseOpCreate, session: AsyncSession = Depends(get_session)):
+async def create_op(
+    payload: WarehouseOpCreate,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
+):
     """Создать складскую операцию. Номер генерируется автоматически, если не задан."""
     data = payload.model_dump()
     data["amount"] = Decimal(str(data["amount"]))
@@ -509,7 +519,10 @@ async def create_op(payload: WarehouseOpCreate, session: AsyncSession = Depends(
 
 @router.patch("/ops/{op_id}", response_model=WarehouseOpOut)
 async def update_op(
-    op_id: int, payload: StageUpdate, session: AsyncSession = Depends(get_session)
+    op_id: int,
+    payload: StageUpdate,
+    session: AsyncSession = Depends(get_session),
+    _: object = Depends(require_permission("wms.count")),
 ):
     """Сменить стадию складской операции."""
     obj = await session.get(WarehouseOp, op_id)
@@ -641,8 +654,8 @@ async def _fill_inventory_from_1c(session: AsyncSession, core: Core, doc: Invent
         if sku.code in existing:
             continue
         expected, cost = await _snapshot_from_1c(core, session, sku.code, doc.warehouse)
-        if expected == 0 and cost is None:
-            continue  # по этому складу остатка нет — в документ не тянем
+        if expected == 0:
+            continue  # нет остатка по складу — в документ «по SKU с остатком» не тянем
         session.add(
             InventoryLine(
                 count_id=doc.id, sku_code=sku.code, sku_title=sku.title, unit=sku.unit,
@@ -1242,7 +1255,9 @@ async def alerts(
         if data:
             for r in data["rows"]:
                 if r["warehouse"] == t.warehouse:
-                    free += r["qty_available"] - r["qty_reserved"]
+                    # клампим по строке (≥0) как в /wms/stock: oversell в 1С (reserved>available)
+                    # не должен раздувать дефицит отрицательным свободным остатком
+                    free += max(r["qty_available"] - r["qty_reserved"], 0.0)
         min_qty = float(t.min_qty)
         if free >= min_qty:
             continue  # порог не нарушен
