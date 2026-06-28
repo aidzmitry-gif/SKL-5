@@ -1,6 +1,7 @@
 """HTTP-API модуля WMS. Монтируется под префиксом ``/wms``."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -28,6 +29,7 @@ from modules.wms.models import (
 from modules.wms.schemas import (
     AdjustmentIn,
     AlertRow,
+    AlertsEmitOut,
     AlertsOut,
     BalanceRow,
     BalancesOut,
@@ -64,6 +66,8 @@ from modules.wms.schemas import (
     ThresholdCreate,
     ThresholdOut,
     TransferIn,
+    ValuedBalancesOut,
+    ValuedRow,
     WarehouseOpCreate,
     WarehouseOpOut,
 )
@@ -152,9 +156,15 @@ async def receipt(
 async def shipment(
     payload: MovementOpIn,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ):
-    """Отгрузка: расходное движение (reason=shipment)."""
+    """Отгрузка: расходное движение (reason=shipment).
+
+    При наличии ``doc_ref`` публикует `wms.shipment.completed` → Офис двигает документ в
+    «Отгружено». Офис матчит документ по shipment_ref/sales_ref/doc_number — кладём ``doc_ref``
+    во все три ключа. Без ``doc_ref`` событие НЕ эмитим: офис не сможет сопоставить документ.
+    """
     obj = StockMovement(
         sku_code=payload.sku_code,
         warehouse=payload.warehouse,
@@ -167,6 +177,18 @@ async def shipment(
         note=payload.note,
     )
     session.add(obj)
+    await session.flush()
+    if payload.doc_ref:
+        core.event_bus.emit(
+            session,
+            "wms.shipment.completed",
+            {
+                "shipment_ref": payload.doc_ref, "sales_ref": payload.doc_ref,
+                "doc_number": payload.doc_ref, "sku_code": payload.sku_code,
+                "warehouse": payload.warehouse, "qty": float(payload.qty),
+                "entity_ref": f"shipment:{obj.id}",
+            },
+        )
     await session.commit()
     await session.refresh(obj)
     return obj
@@ -352,6 +374,85 @@ async def balances(
     ]
     out_rows.sort(key=lambda r: (r.sku_code, r.location_code, r.batch_ref))
     return BalancesOut(rows=out_rows, sku_count=len({r.sku_code for r in out_rows}))
+
+
+@dataclass
+class _Valued:
+    """Оценка остатка WMS в деньгах по (sku,warehouse): qty × себес 1С."""
+
+    sku_code: str
+    title: str
+    warehouse: str
+    qty: float
+    unit_cost: float | None
+    value: float | None
+
+
+async def _valued_rows(session: AsyncSession, core: Core) -> tuple[list[_Valued], float, bool]:
+    """Оперативный остаток WMS (in−out) по (sku,warehouse) × себес 1С → оценка в деньгах.
+
+    Источник себеса — 1С (`stock_by_sku`), тот же, что reconciliation; в 1С не пишем.
+    ``value=None``, если себеса нет в зеркале (честно). Возвращает (строки, total_value,
+    gateway_ok); при отключённом шлюзе — ([], 0.0, False).
+    # ponytail: N+1 по шлюзу (себес на пару sku/склад); bulk-чтение — согласовать с СИНК.
+    """
+    gw = core.services.stock
+    if gw is None:
+        return [], 0.0, False
+    signed = case((StockMovement.kind == "in", StockMovement.qty), else_=-StockMovement.qty)
+    agg = (
+        await session.execute(
+            select(
+                StockMovement.sku_code,
+                StockMovement.warehouse,
+                func.coalesce(func.sum(signed), 0),
+            ).group_by(StockMovement.sku_code, StockMovement.warehouse)
+        )
+    ).all()
+    codes = {r[0] for r in agg}
+    titles = (
+        dict((await session.execute(select(Sku.code, Sku.title).where(Sku.code.in_(codes)))).all())
+        if codes
+        else {}
+    )
+    rows: list[_Valued] = []
+    total = 0.0
+    for sku_code, wh, qty_raw in agg:
+        qty = float(qty_raw or 0)
+        _, cost = await _snapshot_from_1c(core, session, sku_code, wh)
+        unit_cost = float(cost) if cost is not None else None
+        value = round(qty * unit_cost, 2) if unit_cost is not None else None
+        if value is not None:
+            total += value
+        rows.append(
+            _Valued(sku_code=sku_code, title=titles.get(sku_code, ""), warehouse=wh,
+                    qty=qty, unit_cost=unit_cost, value=value)
+        )
+    rows.sort(key=lambda v: abs(v.value) if v.value is not None else 0.0, reverse=True)
+    return rows, round(total, 2), True
+
+
+@router.get("/balances/valued", response_model=ValuedBalancesOut)
+async def balances_valued(
+    session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
+    _: object = Depends(require_permission("wms.read")),
+) -> ValuedBalancesOut:
+    """Оценка оперативного остатка WMS в деньгах: in−out по (sku,warehouse) × себес 1С.
+
+    Себестоимость — из зеркала 1С (как reconciliation), в 1С не пишем. Сорт по |value|
+    убыв. Шлюз не подключён → честный пустой ответ (gateway=false, rows=[]).
+    """
+    rows, total, gateway = await _valued_rows(session, core)
+    return ValuedBalancesOut(
+        rows=[
+            ValuedRow(sku_code=v.sku_code, title=v.title, warehouse=v.warehouse, qty=v.qty,
+                      unit_cost=v.unit_cost, value=v.value)
+            for v in rows
+        ],
+        total_value=total,
+        gateway=gateway,
+    )
 
 
 # --- Остатки по складам: зеркало 1С (read-only через шлюз core.services.stock) ---
@@ -1223,6 +1324,75 @@ async def create_threshold(
     return t
 
 
+@dataclass
+class _Deficit:
+    """Внутренняя строка дефицита: данные для /alerts, эмита `wms.stock.low` и денег дашборда."""
+
+    threshold_id: int
+    sku_code: str
+    sku_title: str
+    warehouse: str
+    free_qty: float
+    min_qty: float
+    deficit: float
+    reorder_qty: float
+    severity: str  # out_of_stock | below_min
+    unit_cost: float | None  # себес из 1С (для дефицита в деньгах); None — нет в зеркале
+
+
+async def _deficit_rows(session: AsyncSession, gw) -> list[_Deficit]:
+    """Активные пороги, где свободный остаток 1С (available−reserved, клампим ≥0) ниже min.
+
+    Дедуп по (sku,warehouse): на пару берём ПЕРВЫЙ порог (сорт. sku_code, id), прочие
+    пропускаем — иначе дублирующие пороги плодят дубли сигнала дозаказа (WMS-R3-5).
+    ``reorder_qty`` клампится в ≥0 (защита от мусора в данных). ``unit_cost`` — себес из той
+    же строки 1С, что и свободный остаток (для оценки дефицита в деньгах). Сорт по дефициту.
+    # ponytail: N+1 по шлюзу (вызов на активный порог); bulk-чтение — согласовать с СИНК.
+    """
+    thresholds = (
+        await session.execute(
+            select(StockThreshold)
+            .where(StockThreshold.active.is_(True))
+            .order_by(StockThreshold.sku_code, StockThreshold.id)
+        )
+    ).scalars().all()
+    by_pair: dict[tuple[str, str], StockThreshold] = {}
+    for t in thresholds:  # первый по (sku_code, id) выигрывает пару
+        by_pair.setdefault((t.sku_code, t.warehouse), t)
+    codes = {t.sku_code for t in by_pair.values()}
+    titles = (
+        dict((await session.execute(select(Sku.code, Sku.title).where(Sku.code.in_(codes)))).all())
+        if codes
+        else {}
+    )
+    rows: list[_Deficit] = []
+    for t in by_pair.values():
+        data = await gw.stock_by_sku(session, t.sku_code)
+        free = 0.0
+        cost: float | None = None
+        if data:
+            for r in data["rows"]:
+                if r["warehouse"] == t.warehouse:
+                    # клампим по строке (≥0) как в /wms/stock: oversell в 1С (reserved>available)
+                    # не должен раздувать дефицит отрицательным свободным остатком
+                    free += max(r["qty_available"] - r["qty_reserved"], 0.0)
+                    if r["cost"] is not None:
+                        cost = float(r["cost"])
+        min_qty = float(t.min_qty)
+        if free >= min_qty:
+            continue  # порог не нарушен
+        rows.append(
+            _Deficit(
+                threshold_id=t.id, sku_code=t.sku_code, sku_title=titles.get(t.sku_code, ""),
+                warehouse=t.warehouse, free_qty=round(free, 2), min_qty=min_qty,
+                deficit=round(min_qty - free, 2), reorder_qty=max(float(t.reorder_qty or 0), 0.0),
+                severity="out_of_stock" if free <= 0 else "below_min", unit_cost=cost,
+            )
+        )
+    rows.sort(key=lambda d: d.deficit, reverse=True)
+    return rows
+
+
 @router.get("/alerts", response_model=AlertsOut)
 async def alerts(
     session: AsyncSession = Depends(get_session),
@@ -1232,45 +1402,52 @@ async def alerts(
     """SKU с дефицитом: свободный остаток 1С (available − reserved) ниже min_qty.
 
     severity: out_of_stock (≤0) / below_min. Рекомендованный дозаказ = reorder_qty.
-    Источник остатка — 1С (через шлюз); WMS в 1С не пишет. Заявку в закупку отсюда НЕ
-    создаём (граница модулей) — кнопка-заглушка на фронте.
-    # ponytail: N+1 по шлюзу (вызов на активный порог); bulk-чтение — согласовать с СИНК.
+    Источник остатка — 1С (через шлюз); WMS в 1С не пишет. Сигнал дозаказа публикуется
+    отдельной ручкой ``POST /alerts/emit`` (событие `wms.stock.low` → Закупки).
     """
     gw = core.services.stock
     if gw is None:
         return AlertsOut(rows=[], gateway=False)
-    thresholds = (
-        await session.execute(select(StockThreshold).where(StockThreshold.active.is_(True)))
-    ).scalars().all()
-    codes = {t.sku_code for t in thresholds}
-    titles = (
-        dict((await session.execute(select(Sku.code, Sku.title).where(Sku.code.in_(codes)))).all())
-        if codes
-        else {}
-    )
-    rows: list[AlertRow] = []
-    for t in thresholds:
-        data = await gw.stock_by_sku(session, t.sku_code)
-        free = 0.0
-        if data:
-            for r in data["rows"]:
-                if r["warehouse"] == t.warehouse:
-                    # клампим по строке (≥0) как в /wms/stock: oversell в 1С (reserved>available)
-                    # не должен раздувать дефицит отрицательным свободным остатком
-                    free += max(r["qty_available"] - r["qty_reserved"], 0.0)
-        min_qty = float(t.min_qty)
-        if free >= min_qty:
-            continue  # порог не нарушен
-        rows.append(
-            AlertRow(
-                sku_code=t.sku_code, title=titles.get(t.sku_code, ""), warehouse=t.warehouse,
-                free_qty=round(free, 2), min_qty=min_qty, deficit=round(min_qty - free, 2),
-                reorder_qty=float(t.reorder_qty),
-                severity="out_of_stock" if free <= 0 else "below_min",
-            )
+    rows = [
+        AlertRow(
+            sku_code=d.sku_code, title=d.sku_title, warehouse=d.warehouse, free_qty=d.free_qty,
+            min_qty=d.min_qty, deficit=d.deficit, reorder_qty=d.reorder_qty, severity=d.severity,
         )
-    rows.sort(key=lambda r: r.deficit, reverse=True)
+        for d in await _deficit_rows(session, gw)
+    ]
     return AlertsOut(rows=rows, gateway=True)
+
+
+@router.post("/alerts/emit", response_model=AlertsEmitOut)
+async def emit_alerts(
+    session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
+    _: object = Depends(require_permission("wms.count")),
+) -> AlertsEmitOut:
+    """Опубликовать сигнал дозаказа `wms.stock.low` по каждому нарушенному порогу.
+
+    Одно плоское событие на (sku,warehouse) → Закупки подписаны и заводят черновик заявки.
+    Источник остатка — 1С через шлюз; шлюз не подключён → 503 (не эмитим пустоту). Дедуп —
+    в пределах вызова по (sku,warehouse) (см. ``_deficit_rows``). Кросс-вызовную защиту от
+    повторных кликов НЕ строим — это ответственность подписчика-закупок (дедуп черновика).
+    """
+    gw = core.services.stock
+    if gw is None:
+        raise HTTPException(status_code=503, detail="Шлюз остатков (1С/integrations) не подключён")
+    deficits = await _deficit_rows(session, gw)
+    for d in deficits:
+        core.event_bus.emit(
+            session,
+            "wms.stock.low",
+            {
+                "sku_code": d.sku_code, "sku_title": d.sku_title, "warehouse": d.warehouse,
+                "free_qty": d.free_qty, "min_qty": d.min_qty, "deficit": d.deficit,
+                "reorder_qty": d.reorder_qty, "severity": d.severity,
+                "source": "wms.threshold", "entity_ref": f"threshold:{d.threshold_id}",
+            },
+        )
+    await session.commit()
+    return AlertsEmitOut(emitted=len(deficits), gateway=True)
 
 
 # --- Цикл-каунт: расписание периодического пересчёта (дисциплина инвентаризации) ---
@@ -1372,7 +1549,12 @@ async def dashboard(
     inv_open = await _count(InventoryCount, InventoryCount.status == "open")
 
     # 1С-зависимые метрики — переиспользуем готовую логику (gateway внутри)
-    al = await alerts(session=session, core=core, _=None)
+    gw = core.services.stock
+    deficits = await _deficit_rows(session, gw) if gw is not None else []
+    alerts_deficit_value = round(
+        sum(d.deficit * d.unit_cost for d in deficits if d.unit_cost is not None), 2
+    )
+    _, inventory_value, _ = await _valued_rows(session, core)
     rec = await reconciliation(warehouse=None, session=session, core=core, _=None)
     recon_max = max((abs(r.diff_value) for r in rec.rows if r.diff_value is not None), default=0.0)
 
@@ -1398,7 +1580,9 @@ async def dashboard(
         receipts_pending_qc=pending_qc,
         tasks_putaway_open=putaway_open,
         tasks_pick_open=pick_open,
-        alerts_count=len(al.rows),
+        alerts_count=len(deficits),
+        alerts_deficit_value=alerts_deficit_value,
+        inventory_value=inventory_value,
         inventories_open=inv_open,
         recon_max_diff_value=round(recon_max, 2),
         recon_total_diff_value=rec.total_abs_diff_value,

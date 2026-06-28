@@ -116,6 +116,23 @@ class BalancesOut(BaseModel):
     sku_count: int
 
 
+class ValuedRow(BaseModel):
+    """Оперативный остаток (in−out) по (SKU, склад) × себестоимость 1С → деньги."""
+
+    sku_code: str
+    title: str
+    warehouse: str
+    qty: float  # знаковая сумма движений: in − out
+    unit_cost: float | None  # себес единицы из 1С (None — нет в зеркале)
+    value: float | None  # qty × unit_cost (None без себеса)
+
+
+class ValuedBalancesOut(BaseModel):
+    rows: list[ValuedRow]  # сорт. по |value| убыв.
+    total_value: float  # суммарная оценка остатка в деньгах
+    gateway: bool  # шлюз 1С подключён; False → себес недоступен, rows=[]
+
+
 class WarehouseOpCreate(BaseModel):
     counterparty: str = ""
     title: str = ""
@@ -397,6 +414,13 @@ class AlertsOut(BaseModel):
     gateway: bool
 
 
+class AlertsEmitOut(BaseModel):
+    """Результат публикации сигналов дозаказа `wms.stock.low` (одно событие на нарушенный порог)."""
+
+    emitted: int  # сколько событий опубликовано (= нарушенных порогов после дедупа)
+    gateway: bool  # шлюз 1С подключён (иначе роут отвечает 503, не эмитит)
+
+
 # --- Цикл-каунт (расписание периодического пересчёта) ---
 
 
@@ -438,6 +462,8 @@ class DashboardOut(BaseModel):
     tasks_putaway_open: int  # открытые задачи размещения
     tasks_pick_open: int  # открытые задачи подбора
     alerts_count: int  # SKU ниже порога (low-stock)
+    alerts_deficit_value: float  # Σ дефицит×себес (1С) по нарушенным порогам; 0 без шлюза
+    inventory_value: float  # оценка остатка WMS в деньгах (in−out × себес 1С); 0 без шлюза
     inventories_open: int  # открытые инвентаризации
     recon_max_diff_value: float  # макс |расхождение в деньгах| (сверка с 1С)
     recon_total_diff_value: float  # суммарное расхождение в деньгах

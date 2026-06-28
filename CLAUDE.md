@@ -3,9 +3,24 @@
 **Тип:** git submodule → https://github.com/aidzmitry-gif/SKL-5.git (правка = коммит в этот репозиторий, а не в суперпроект)
 **API-префикс:** `/wms`
 **Схема БД:** `wms`
-**Статус:** рабочий. Журнал движений + воронка операций + **остатки-зеркало 1С (read-only)** + **инвентаризация** (документ сверки против 1С). RBAC объявлен (`wms.read`/`wms.count`). Нет workflow/telegram/on_startup; события только потребляются, наружу не публикуются.
+**Статус:** рабочий. Журнал движений + воронка операций + **остатки-зеркало 1С (read-only)** + **инвентаризация** (документ сверки против 1С). RBAC объявлен (`wms.read`/`wms.count`). Нет workflow/telegram/on_startup. С круга 3 модуль **публикует** события наружу (`wms.stock.low` → закупки, `wms.shipment.completed` → офис) — только из HTTP-роутов.
 
 > **Контракт остатков (жёстко):** 1С/integrations = истина остатка (фаза 1), WMS только ДУБЛИРУЕТ движения и ЧИТАЕТ остаток через фасад `core.services.stock` (`stock_by_sku`). В 1С НЕ пишем; корректировка остатков 1С заморожена до фазы 2. Не трогать `core.services.stock`, `modules/integrations`, shared-kernel.
+
+## Круг 3 (2026-06-28, полоса Склад/WMS) — склад перестаёт быть силосом
+Модуль впервые **публикует** события (миграций нет, всё аддитивно). Эмит — ТОЛЬКО из роутов.
+- **`POST /wms/alerts/emit`** (`wms.count`): по нарушенным порогам эмитит `wms.stock.low` (плоский
+  canonical payload, одно событие на (sku,warehouse)) → Закупки. Логика дефицита вынесена в
+  `_deficit_rows(session, gw)` (переиспользуют `/alerts`, `/alerts/emit`, дашборд). Дедуп по
+  (sku,warehouse) — первый порог пары; `reorder_qty` клампится ≥0. `gateway=None` → 503 (не эмитим пустоту).
+- **`POST /wms/shipment`** теперь при `doc_ref` эмитит `wms.shipment.completed` → Офис («Отгружено»).
+- **`GET /wms/balances/valued`** (`wms.read`): оперативный остаток (in−out) по (sku,warehouse) ×
+  себес 1С (`_valued_rows`); сорт по |value|, `total_value`; `gateway=false` → честный пустой ответ.
+- **Дашборд**: плитки `inventory_value` (оценка остатка в деньгах → `/erp/wms/balances`) и
+  `alerts_deficit_value` (Σ дефицит×себес → `/erp/wms/alerts`); `<SourceTag source="1c">`.
+- **Фронт**: кнопка «Создать заявку в закупку» на `/erp/wms/alerts` → `POST /wms/alerts/emit`
+  (состояния загрузка/успех-тост/ошибка/пусто-disabled); чистые `alertsEmitMessage`/`canEmitAlerts` в
+  `lib/wms-warehouse.ts`. Тесты: `tests/test_wms_events.py` (5 кейсов + дедуп/клампинг), vitest.
 
 ## Новое (2026-06-27, полоса Склад/WMS)
 - **Остатки-зеркало:** `GET /wms/stock` (`require_permission("wms.read")`) — перебор `Sku` из shared-kernel + `stock_by_sku` по каждому (N+1, ponytail: bulk-метод на StockGateway — будущее). `gateway:false`, если integrations выключен. Фронт: `app/erp/wms/stock`, `components/erp/wms-stock-table.tsx`, `lib/wms-stock.ts`.
@@ -47,9 +62,18 @@ sales, приёмка из закупок/производства).
 - Permissions / roles / workflow / telegram / on_startup — **не регистрируются**.
 
 ## События
-- **Публикует**: нет (модуль не вызывает `event_bus.emit`).
+- **Публикует** (круг 3 — модуль впервые эмитит наружу; ТОЛЬКО из HTTP-роутов, не из обработчиков):
+  - `wms.stock.low` — из `POST /wms/alerts/emit`. Плоский canonical payload (одно событие на
+    нарушенный порог): `{sku_code, sku_title, warehouse, free_qty, min_qty, deficit, reorder_qty,
+    severity:'out_of_stock'|'below_min', source:'wms.threshold', entity_ref:'threshold:<id>'}`.
+    → **Закупки** заводят черновик заявки (`PurchaseRequest.item := sku_title`).
+  - `wms.shipment.completed` — из `POST /wms/shipment` при наличии `doc_ref`. Payload:
+    `{shipment_ref, sales_ref, doc_number (все = doc_ref), sku_code, warehouse, qty,
+    entity_ref:'shipment:<movement_id>'}`. → **Офис** двигает документ в «Отгружено»
+    (матч по shipment_ref/sales_ref/doc_number).
 - **Подписан на**:
   - `sales.stock.reserved` → `on_stock_reserved`
+  - `sales.stock.released` → `on_stock_released`
   - `procurement.received` → `on_goods_received` ✅ (подписан)
   - `production.completed` → `on_goods_received` ✅ (подписан)
 
