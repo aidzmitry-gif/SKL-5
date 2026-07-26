@@ -1,0 +1,1267 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ERP — Склад</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#F3F4F6; --panel:#FFFFFF; --line:#E8EAED; --line2:#EEF0F2;
+    --ink:#111827; --ink2:#374151; --muted:#6B7280; --muted2:#9CA3AF;
+    --blue:#2563EB; --blue-soft:#EFF6FF;
+    --green:#16A34A; --green-soft:#F0FDF4;
+    --red:#DC2626; --red-soft:#FEF2F2;
+    --amber:#D97706; --amber-soft:#FFFBEB;
+    --violet:#7C3AED; --violet-soft:#F5F3FF;
+    --cyan:#0891B2; --cyan-soft:#ECFEFF;
+    --teal:#0D9488; --teal-soft:#F0FDFA;
+    --indigo:#4F46E5; --indigo-soft:#EEF2FF;
+    --steel:#64748B; --steel-soft:#F1F5F9; --steel-ink:#475569;
+    --coral:#993C1D; --coral-soft:#FAECE7;
+    --shadow:0 1px 2px rgba(16,24,40,.05);
+    --shadow-lg:0 8px 24px rgba(16,24,40,.10);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{font-family:'Golos Text',-apple-system,'Segoe UI',sans-serif;
+    background:var(--bg);color:var(--ink);font-size:14px;line-height:1.4;-webkit-font-smoothing:antialiased}
+  .ico{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;
+    stroke-linecap:round;stroke-linejoin:round;flex:none}
+  .ico.s{width:15px;height:15px;stroke-width:1.7}
+  .ico.xs{width:13px;height:13px;stroke-width:1.7}
+
+  .app{display:grid;grid-template-columns:236px minmax(0,1fr) 320px;min-height:100vh}
+
+  .sidebar{background:var(--panel);border-right:1px solid var(--line);position:sticky;top:0;
+    height:100vh;align-self:start;display:flex;flex-direction:column;padding:18px 14px 14px}
+  .brand{display:flex;align-items:center;gap:10px;padding:4px 8px 18px}
+  .brand-logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#3B82F6,#2563EB);
+    display:grid;place-items:center;color:#fff}
+  .brand-name{font-weight:800;font-size:18px;letter-spacing:.5px}
+  .nav-label{font-size:11px;font-weight:600;color:var(--muted2);letter-spacing:.6px;padding:8px 8px 6px}
+  .nav{display:flex;flex-direction:column;gap:2px;overflow-y:auto;flex:1;margin:0 -4px;padding:0 4px}
+  .nav::-webkit-scrollbar{width:6px}.nav::-webkit-scrollbar-thumb{background:#E5E7EB;border-radius:3px}
+  .nav-item{display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:9px;color:var(--ink2);
+    font-weight:500;cursor:pointer;text-decoration:none;font-size:13.5px}
+  .nav-item:hover{background:#F7F8FA}
+  .nav-item.active{background:var(--blue);color:#fff;font-weight:600}
+  .nav-item.active .ico{stroke:#fff}
+  .nav-item .ico{stroke:var(--muted)}
+  .subnav{display:flex;flex-direction:column;gap:1px;margin:2px 0 4px 12px;padding-left:14px;border-left:2px solid var(--line2)}
+  .subnav a{padding:7px 10px;border-radius:8px;color:var(--muted);font-size:13px;text-decoration:none;font-weight:500;cursor:pointer}
+  .subnav a:hover{background:#F7F8FA;color:var(--ink2)}
+  .subnav a.active{color:var(--blue);font-weight:600}
+  .user-card{display:flex;align-items:center;gap:10px;padding:10px 8px 2px;border-top:1px solid var(--line2);margin-top:8px}
+  .avatar{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;color:#fff;font-weight:600;font-size:13px;flex:none}
+  .user-card .nm{font-weight:600;font-size:13.5px}.user-card .rl{font-size:12px;color:var(--muted2)}
+
+  .main{min-width:0;padding:18px 22px 26px;display:flex;flex-direction:column;gap:16px}
+  .topbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .crumb{font-size:20px;font-weight:700}
+  .crumb .sep{color:var(--muted2);font-weight:500;margin:0 4px}.crumb .cur{color:var(--ink)}
+  .topbar-tools{display:flex;align-items:center;gap:10px;margin-left:6px}
+  .search{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);
+    border-radius:10px;padding:9px 12px;color:var(--muted2);width:240px;font-size:13px}
+  .search input{border:0;outline:0;background:transparent;font:inherit;color:var(--ink);width:100%}
+  .search input::placeholder{color:var(--muted2)}
+  .btn{display:inline-flex;align-items:center;gap:8px;border-radius:10px;padding:9px 14px;font-weight:600;
+    font-size:13px;cursor:pointer;border:1px solid var(--line);background:var(--panel);color:var(--ink2)}
+  .btn:hover{background:#F7F8FA}.btn .ico{stroke:var(--muted)}
+  .spacer{flex:1}
+  .btn-primary{background:var(--blue);color:#fff;border:0;box-shadow:0 1px 2px rgba(37,99,235,.3)}
+  .btn-primary:hover{background:#1D4ED8}.btn-primary .ico{stroke:#fff}
+  .topbar-icons{display:flex;align-items:center;gap:6px}
+  .icon-btn{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;background:var(--panel);
+    border:1px solid var(--line);color:var(--muted);cursor:pointer;position:relative}
+  .icon-btn:hover{background:#F7F8FA}
+  .dot{position:absolute;top:7px;right:8px;width:8px;height:8px;border-radius:50%;background:var(--red);border:2px solid var(--panel)}
+
+  .tabbar{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-top:-2px}
+  .tab{padding:11px 16px;font-weight:600;font-size:14px;color:var(--muted);cursor:pointer;border:0;
+    background:transparent;border-bottom:2px solid transparent;margin-bottom:-1px;display:inline-flex;align-items:center;gap:8px}
+  .tab:hover{color:var(--ink2)}
+  .tab.active{color:var(--blue);border-bottom-color:var(--blue)}
+  .tab .ico{stroke:currentColor}
+
+  .section-title{font-weight:700;font-size:14px;margin:2px 0}
+
+  .stat-cards{display:grid;grid-template-columns:repeat(5,1fr);gap:14px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:15px 16px;box-shadow:var(--shadow)}
+  .stat-top{display:flex;align-items:center;gap:11px;margin-bottom:11px}
+  .stat-ico{width:40px;height:40px;border-radius:11px;display:grid;place-items:center;flex:none}
+  .stat-lbl{font-size:12.5px;color:var(--muted);font-weight:500;line-height:1.3}
+  .stat-val{font-size:23px;font-weight:700;letter-spacing:-.3px}
+  .stat-val .tot{font-size:14px;color:var(--muted2);font-weight:600}
+  .bar{height:6px;border-radius:99px;background:#EEF0F2;overflow:hidden;margin:11px 0 6px}
+  .bar > i{display:block;height:100%;border-radius:99px}
+  .stat-pct{font-size:11.5px;color:var(--muted2);font-weight:500}
+
+  .board-head{display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:-6px}
+  .seg{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .seg button{border:0;background:transparent;padding:7px 9px;cursor:pointer;color:var(--muted2);display:grid;place-items:center}
+  .seg button.on{background:var(--blue-soft);color:var(--blue)}
+
+  .kanban-scroll{overflow-x:auto;padding-bottom:6px;margin:0 -4px;padding-left:4px;padding-right:4px}
+  .kanban-scroll::-webkit-scrollbar{height:9px}
+  .kanban-scroll::-webkit-scrollbar-thumb{background:#DFE2E6;border-radius:5px}
+  .kanban-scroll::-webkit-scrollbar-track{background:transparent}
+  .kanban{display:flex;gap:14px;min-width:max-content}
+  .col{width:276px;flex:none;display:flex;flex-direction:column;animation:rise .5s cubic-bezier(.2,.7,.3,1) both}
+  .col:nth-child(1){animation-delay:.02s}.col:nth-child(2){animation-delay:.06s}
+  .col:nth-child(3){animation-delay:.10s}.col:nth-child(4){animation-delay:.14s}
+  .col:nth-child(5){animation-delay:.18s}.col:nth-child(6){animation-delay:.22s}.col:nth-child(7){animation-delay:.26s}
+  @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+  .col-head{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:13px 14px;
+    box-shadow:var(--shadow);position:relative;overflow:hidden;margin-bottom:11px}
+  .col-head::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px}
+  .col-head--blue::before{background:var(--blue)}.col-head--indigo::before{background:var(--indigo)}
+  .col-head--amber::before{background:var(--amber)}.col-head--cyan::before{background:var(--cyan)}
+  .col-head--violet::before{background:var(--violet)}.col-head--teal::before{background:var(--teal)}
+  .col-head--green::before{background:var(--green)}
+  .col-title{font-weight:700;font-size:14px}
+  .col-meta{font-size:12px;color:var(--muted);font-weight:500;margin-top:4px}
+  .col-meta b{color:var(--ink2);font-weight:600}
+  .col-body{display:flex;flex-direction:column}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:13px;margin-bottom:11px;
+    box-shadow:var(--shadow);transition:.15s}
+  .card:hover{box-shadow:var(--shadow-lg);transform:translateY(-1px);border-color:#DCDFE3}
+  .c-top{display:flex;align-items:center;gap:7px;margin-bottom:9px}
+  .c-id{font-size:12px;color:var(--muted2);font-weight:600;font-feature-settings:"tnum"}
+  .c-top .grow{flex:1}
+  .star{color:var(--muted2);cursor:pointer}.star.on{color:#F59E0B;fill:#F59E0B}
+  .dots{color:var(--muted2);cursor:pointer}
+  .badge{font-size:10.5px;font-weight:600;padding:3px 8px;border-radius:6px;white-space:nowrap;display:inline-flex;align-items:center;gap:4px}
+  .b-high{color:var(--red);background:var(--red-soft)}.b-med{color:var(--amber);background:var(--amber-soft)}
+  .b-low{color:var(--muted);background:#F3F4F6}.b-info{color:var(--blue);background:var(--blue-soft)}
+  .b-ok{color:var(--green);background:var(--green-soft)}.b-prod{color:var(--violet);background:var(--violet-soft)}
+  .b-cyan{color:var(--cyan);background:var(--cyan-soft)}.b-steel{color:var(--steel-ink);background:var(--steel-soft)}
+  .b-dead{color:var(--coral);background:var(--coral-soft)}
+
+  .c-name{font-weight:700;font-size:14px;line-height:1.25}
+  .c-sub{font-size:12.5px;color:var(--muted);margin-top:3px;line-height:1.35}
+  .c-sub .link{color:var(--blue);font-weight:600}
+  .c-amt{font-weight:700;font-size:15px;margin-top:8px}
+  .c-line{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink2);margin-top:7px}
+  .c-line .ico{stroke:var(--muted2)}.c-line.muted{color:var(--muted)}
+  .neg{color:var(--red);font-weight:600}.pos{color:var(--green);font-weight:600}
+
+  .dest{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;padding:4px 9px;
+    border-radius:7px;margin-top:9px;border:1px solid transparent}
+  .dest .ico{stroke:currentColor}
+  .dest-cli{color:var(--teal);background:var(--teal-soft);border-color:#CCFBF1}
+  .dest-stk{color:var(--steel-ink);background:var(--steel-soft);border-color:#E2E8F0}
+
+  .panel-soft{background:#FAFBFC;border:1px solid var(--line2);border-radius:10px;padding:9px 11px;margin-top:9px}
+  .panel-soft .ttl{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px}
+  .kv{display:flex;justify-content:space-between;font-size:12.5px;padding:2px 0;gap:8px}
+  .kv span:first-child{color:var(--muted)}
+  .kv span:last-child{font-weight:600;color:var(--ink2);font-feature-settings:"tnum";text-align:right}
+
+  .c-foot{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-top:10px;padding-top:9px;border-top:1px solid var(--line2)}
+  .c-foot .who{display:flex;align-items:center;gap:5px}.c-foot .ico{stroke:var(--muted2)}
+  .c-foot .date{margin-left:auto;font-feature-settings:"tnum"}
+
+  .pills{display:flex;gap:7px;margin-top:10px}
+  .pill{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:6px;font-size:12px;font-weight:600;
+    padding:7px;border-radius:8px;border:1px solid var(--line);background:#fff;color:var(--ink2);cursor:pointer}
+  .pill:hover{background:#F7F8FA}
+  .pill.go{background:var(--blue);color:#fff;border-color:var(--blue)}.pill.go:hover{background:#1D4ED8}
+  .pill.ok{background:var(--green-soft);color:var(--green);border-color:#BBF7D0}
+  .pill.stk{background:var(--steel-soft);color:var(--steel-ink);border-color:#E2E8F0}
+  .pill .ico{stroke:currentColor}
+
+  .actions{display:flex;justify-content:space-between;margin-top:11px;padding-top:10px;border-top:1px solid var(--line2)}
+  .act{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;background:#F7F8FA;color:var(--muted);cursor:pointer}
+  .act:hover{background:var(--blue-soft);color:var(--blue)}
+
+  .add-card{display:flex;align-items:center;justify-content:center;gap:7px;padding:11px;border:1.5px dashed #D7DBE0;
+    border-radius:12px;color:var(--muted2);font-weight:600;font-size:13px;cursor:pointer;background:transparent}
+  .add-card:hover{border-color:var(--blue);color:var(--blue);background:var(--blue-soft)}
+  .board-block{display:flex;flex-direction:column;gap:11px}
+  .board-title{display:flex;align-items:center;gap:11px;font-weight:700;font-size:15px;flex-wrap:wrap}
+  .board-title .tag{font-size:11px;font-weight:600;padding:3px 10px;border-radius:7px}
+  .board-title .tag.in{color:var(--indigo);background:var(--indigo-soft)}
+  .board-title .tag.out{color:var(--teal);background:var(--teal-soft)}
+  .board-title .doc{font-size:12px;color:var(--muted2);font-weight:500}
+  .bridge{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:#FAFBFC;border:1px dashed #D7DBE0;border-radius:14px;padding:13px 16px}
+  .bridge .bl{font-size:12.5px;font-weight:600;color:var(--ink2);display:flex;align-items:center;gap:8px}
+  .bridge .bl .ico{stroke:var(--muted2)}
+  .bridge .route{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;padding:7px 12px;border-radius:9px;border:1px solid transparent;cursor:pointer}
+  .bridge .route .ico{stroke:currentColor}
+  .bridge .route.stk{color:var(--steel-ink);background:var(--steel-soft);border-color:#E2E8F0}
+  .bridge .route.cli{color:var(--teal);background:var(--teal-soft);border-color:#CCFBF1}
+  .bridge .arr-d{color:var(--muted2);display:flex;align-items:center}
+
+  .summary{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow)}
+  .summary-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+  .summary-head .t{font-weight:700;font-size:15px}
+  .period{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);background:#F7F8FA;
+    border:1px solid var(--line2);border-radius:9px;padding:7px 11px;font-weight:500}
+  .summary-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
+  .metric{padding:0 18px;border-left:1px solid var(--line2)}
+  .metric:first-child{border-left:0;padding-left:0}
+  .metric .ml{font-size:12.5px;color:var(--muted);font-weight:500}
+  .metric .mv{font-size:25px;font-weight:700;letter-spacing:-.5px;margin-top:5px;font-feature-settings:"tnum"}
+  .metric .mv.sm{font-size:18px}
+  .metric .md{font-size:12px;font-weight:600;margin-top:5px}
+  .up{color:var(--green)}.down{color:var(--red)}.neutral{color:var(--muted)}
+
+  .stock-kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:14px}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow)}
+  .kpi .kl{font-size:12.5px;color:var(--muted);font-weight:500}
+  .kpi .kv2{font-size:22px;font-weight:700;margin-top:6px;letter-spacing:-.3px;font-feature-settings:"tnum"}
+  .kpi .kv2.sm{font-size:17px}
+  .kpi .kd{font-size:12px;color:var(--muted2);margin-top:4px;font-weight:500}
+  .kpi .kv2.warn{color:var(--amber)}.kpi .kv2.bad{color:var(--coral)}
+
+  .toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .fpills{display:flex;gap:7px;flex-wrap:wrap}
+  .fp{padding:8px 12px;border-radius:9px;border:1px solid var(--line);background:var(--panel);font-size:12.5px;
+    font-weight:600;color:var(--ink2);cursor:pointer}
+  .fp:hover{background:#F7F8FA}
+  .fp.on{background:var(--blue-soft);color:var(--blue);border-color:#BBD3F5}
+
+  .toast{display:none;align-items:center;gap:10px;background:var(--green-soft);border:1px solid #BBF7D0;
+    color:#166534;border-radius:12px;padding:11px 14px;font-size:13px;font-weight:500}
+  .toast.show{display:flex;animation:rise .3s ease both}
+  .toast .ico{stroke:#166534}
+
+  .table-wrap{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
+  .tscroll{overflow-x:auto}
+  table.stock{width:100%;border-collapse:collapse;min-width:1040px}
+  .stock th{text-align:left;font-size:11px;font-weight:600;color:var(--muted2);text-transform:uppercase;
+    letter-spacing:.4px;padding:13px 14px;border-bottom:1px solid var(--line);white-space:nowrap;background:#FAFBFC}
+  .stock td{padding:13px 14px;border-bottom:1px solid var(--line2);font-size:13px;vertical-align:middle}
+  .stock tr:last-child td{border-bottom:0}
+  .stock tbody tr:hover td{background:#FAFBFC}
+  .nm-cell .n{font-weight:700;font-size:13.5px}
+  .nm-cell .meta{font-size:11.5px;color:var(--muted2);margin-top:2px}
+  .qty{font-weight:700;font-feature-settings:"tnum";font-size:15px}
+  .qty.zero{color:var(--muted2)}
+  .resv-cell .r{font-weight:700;font-feature-settings:"tnum";font-size:15px}
+  .resv-cell .deal{font-size:11px;color:var(--blue);font-weight:600;margin-top:1px}
+  .cell-loc{color:var(--ink2);font-size:12.5px;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+  .cell-loc .ico{stroke:var(--muted2)}
+  .abc{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:7px;font-weight:700;font-size:12px}
+  .abc-A{background:var(--blue-soft);color:var(--blue)}
+  .abc-B{background:var(--amber-soft);color:var(--amber)}
+  .abc-C{background:#F3F4F6;color:var(--muted)}
+  .por{font-size:11px;color:var(--muted2);margin-top:4px;font-feature-settings:"tnum"}
+  .price{font-weight:700;font-feature-settings:"tnum";white-space:nowrap}
+  .price.zero{color:var(--muted2);font-weight:600}
+  .qin{width:52px;padding:6px 6px;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:13px;text-align:center;outline:0}
+  .qin:focus{border-color:var(--blue)}
+  .act-cell{display:flex;align-items:center;gap:7px;white-space:nowrap}
+  .btn-sm{display:inline-flex;align-items:center;gap:6px;padding:7px 11px;border-radius:8px;font-size:12.5px;
+    font-weight:600;cursor:pointer;border:1px solid var(--line);background:#fff;color:var(--ink2)}
+  .btn-sm:hover{background:#F7F8FA}
+  .btn-sm.go{background:var(--blue);color:#fff;border-color:var(--blue)}.btn-sm.go:hover{background:#1D4ED8}
+  .btn-sm .ico{stroke:currentColor}
+  .io{width:30px;height:30px;border-radius:8px;display:inline-grid;place-items:center;background:#F7F8FA;color:var(--muted);cursor:pointer;border:1px solid var(--line2)}
+  .io:hover{background:var(--blue-soft);color:var(--blue);border-color:#BBD3F5}
+  .io .ico{stroke:currentColor}
+  .th-note{font-weight:500;color:var(--muted2);text-transform:none;letter-spacing:0;font-size:10px}
+  .hint{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--ink2);background:#F7F8FA;border:1px solid var(--line2);border-radius:10px;padding:10px 13px}
+  .hint .ico{stroke:var(--muted2);flex:none}
+
+  .chat{background:var(--panel);border-left:1px solid var(--line);position:sticky;top:0;height:100vh;align-self:start;display:flex;flex-direction:column}
+  .chat-head{display:flex;align-items:center;justify-content:space-between;padding:20px 18px 14px}
+  .chat-head .t{font-weight:700;font-size:15px}
+  .chat-head .add{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;background:#F7F8FA;color:var(--muted);cursor:pointer}
+  .chat-head .add:hover{background:var(--blue-soft);color:var(--blue)}
+  .chat-list{flex:1;overflow-y:auto;padding:0 8px}
+  .chat-list::-webkit-scrollbar{width:6px}.chat-list::-webkit-scrollbar-thumb{background:#E5E7EB;border-radius:3px}
+  .chat-row{display:flex;gap:11px;padding:11px 10px;border-radius:11px;cursor:pointer}
+  .chat-row:hover{background:#F7F8FA}
+  .chat-av{position:relative;flex:none}
+  .chat-av .badge-n{position:absolute;bottom:-3px;right:-3px;min-width:17px;height:17px;border-radius:9px;
+    background:var(--blue);color:#fff;font-size:10.5px;font-weight:700;display:grid;place-items:center;border:2px solid var(--panel);padding:0 3px}
+  .chat-body{flex:1;min-width:0}
+  .chat-row .nm{font-weight:600;font-size:13px;display:flex;justify-content:space-between;gap:8px}
+  .chat-row .nm .tm{color:var(--muted2);font-weight:500;font-size:11.5px;flex:none}
+  .chat-row .msg{font-size:12.5px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .chat-foot{padding:14px 18px;border-top:1px solid var(--line2)}
+  .chat-foot a{color:var(--blue);font-weight:600;font-size:13px;text-decoration:none;display:inline-flex;align-items:center;gap:7px}
+
+  /* фокус по этапу */
+  .stagebar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .stagebar .lbl{font-size:12.5px;font-weight:600;color:var(--muted)}
+  .stage-seg{display:flex;gap:4px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:3px}
+  .stage-seg button{border:0;background:transparent;padding:7px 12px;border-radius:8px;font:inherit;font-size:12.5px;font-weight:600;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .stage-seg button:hover{background:#F7F8FA;color:var(--ink2)}
+  .stage-seg button.on{background:var(--blue);color:#fff}
+  .stage-seg button.on .ico{stroke:#fff}
+  .stage-seg button .ico{stroke:var(--muted2)}
+  /* линзы этапов на вкладке «Операции» */
+  #view-ops.stage-receiving #board-out,
+  #view-ops.stage-receiving .bridge,
+  #view-ops.stage-receiving .await-launch{display:none}
+  #view-ops.stage-picking #board-in,
+  #view-ops.stage-picking .bridge{display:none}
+  #view-ops.stage-picking #board-out .col.st-ship{display:none}
+  #view-ops.stage-shipping #board-in,
+  #view-ops.stage-shipping .bridge,
+  #view-ops.stage-shipping .await-launch{display:none}
+  #view-ops.stage-shipping #board-out .col.st-pick{display:none}
+  /* зона ожидания запуска */
+  .col-head--steel::before{background:var(--steel)}
+  .wait-chip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:7px}
+  .wait-chip.warn{color:var(--amber);background:var(--amber-soft)}
+  .wait-chip.bad{color:var(--red);background:var(--red-soft)}
+  .wait-chip .ico{stroke:currentColor}
+  /* блок товарной накладной */
+  .tn{background:#FAFBFC;border:1px solid var(--line2);border-radius:10px;padding:9px 11px;margin-top:9px}
+  .tn .tn-h{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:700;color:var(--ink2)}
+  .tn .tn-h .ico{stroke:var(--muted2)}
+  .tn .tn-st{font-size:12px;font-weight:600;margin-top:5px;display:flex;align-items:center;gap:6px}
+  .tn .tn-st.signed{color:var(--green)}
+  .tn .tn-st.wait{color:var(--amber)}
+  .tn .tn-by{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .pill[disabled]{opacity:.5;cursor:not-allowed;pointer-events:none}
+
+  @media(max-width:1280px){.app{grid-template-columns:212px minmax(0,1fr)} .chat{display:none}}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-cube" viewBox="0 0 24 24"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 9.5 12 3l9 6.5V21H3z"/><path d="M9 21v-6h6v6"/></symbol>
+  <symbol id="i-crm" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5a3 3 0 0 1 0 6"/><path d="M18.5 20a5 5 0 0 0-3-4.6"/></symbol>
+  <symbol id="i-cart" viewBox="0 0 24 24"><circle cx="9" cy="20" r="1.4"/><circle cx="17" cy="20" r="1.4"/><path d="M3 4h2l2.2 11.2a1 1 0 0 0 1 .8h8.4a1 1 0 0 0 1-.8L20 7H6"/></symbol>
+  <symbol id="i-factory" viewBox="0 0 24 24"><path d="M2 20h20"/><path d="M4 20V10l5 3V10l5 3V7l5 3v10"/></symbol>
+  <symbol id="i-truck" viewBox="0 0 24 24"><path d="M3 6h11v9H3z"/><path d="M14 9h3.5l3 3v3H14z"/><circle cx="7" cy="18" r="1.6"/><circle cx="17.5" cy="18" r="1.6"/></symbol>
+  <symbol id="i-wallet" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18"/><circle cx="16.5" cy="14.5" r="1.2"/></symbol>
+  <symbol id="i-mega" viewBox="0 0 24 24"><path d="M3 11v2l11 5V6z"/><path d="M14 8.5a3 3 0 0 1 0 7"/><path d="M6 13.5V17a1.5 1.5 0 0 0 3 0v-3"/></symbol>
+  <symbol id="i-support" viewBox="0 0 24 24"><path d="M4 13v-1a8 8 0 0 1 16 0v1"/><rect x="3" y="13" width="4" height="6" rx="1.5"/><rect x="17" y="13" width="4" height="6" rx="1.5"/><path d="M20 18.5a3 3 0 0 1-3 3h-3"/></symbol>
+  <symbol id="i-hr" viewBox="0 0 24 24"><circle cx="8" cy="9" r="2.5"/><circle cx="16" cy="9" r="2.5"/><path d="M3 19a5 5 0 0 1 10 0"/><path d="M14 19a5 5 0 0 1 7-4"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 4v16h16"/><rect x="7.5" y="12" width="2.6" height="5"/><rect x="12.5" y="8" width="2.6" height="9"/><rect x="17.5" y="5" width="2.6" height="12"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 20a2 2 0 0 0 4 0"/></symbol>
+  <symbol id="i-msg" viewBox="0 0 24 24"><path d="M4 5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H9l-5 4z"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 0 1 4 2c0 1.5-2 1.8-2 3"/><circle cx="11.7" cy="17" r=".7" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="10" cy="6" r="2.4"/><circle cx="16" cy="12" r="2.4"/><circle cx="8" cy="18" r="2.4"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-dots" viewBox="0 0 24 24"><circle cx="12" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="18" r="1.4" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3 2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.8 6.8 19l1-5.8L3.6 9.2l5.8-.8z"/></symbol>
+  <symbol id="i-cols" viewBox="0 0 24 24"><rect x="3" y="4" width="5" height="16" rx="1.3"/><rect x="10" y="4" width="5" height="16" rx="1.3"/><rect x="17" y="4" width="4" height="16" rx="1.3"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-table" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.2"/><path d="M3 10h18M9 5v14"/></symbol>
+  <symbol id="i-inbound" viewBox="0 0 24 24"><path d="M12 3v8M8.5 7.5 12 11l3.5-3.5"/><path d="M4 13v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6"/></symbol>
+  <symbol id="i-ruble" viewBox="0 0 24 24"><path d="M8 4v16"/><path d="M8 4h4.5a3.5 3.5 0 0 1 0 7H8"/><path d="M5 13.5h8"/></symbol>
+  <symbol id="i-box2" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="13" rx="1.6"/><path d="M4 11h16"/><path d="M9 7V4h6v3"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4 3 7 7 8 4-1 7-4 7-8V6z"/><path d="m9 11.8 2 2 4-4"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2.5"/><rect x="9" y="2.5" width="6" height="3.2" rx="1"/><path d="M8.5 11h7M8.5 15h5"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4M9.5 12h5M9.5 15.5h5"/></symbol>
+  <symbol id="i-barcode" viewBox="0 0 24 24"><path d="M4 6v12M6.5 6v12M9 6v12M12 6v12M15 6v12M17.5 6v12M20 6v12"/></symbol>
+  <symbol id="i-printer" viewBox="0 0 24 24"><path d="M7 9V4h10v5"/><rect x="4" y="9" width="16" height="7" rx="1.6"/><rect x="7" y="14" width="10" height="6" rx="1"/><circle cx="17" cy="12" r=".7" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-cam" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="12" rx="2.5"/><circle cx="12" cy="13" r="3"/><path d="M8 7l1.5-2.2h5L16 7"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21s7-6 7-11a7 7 0 0 0-14 0c0 5 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M5 20a7 7 0 0 1 14 0"/></symbol>
+  <symbol id="i-cal" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="16" rx="2.5"/><path d="M4 9.5h16M8 3v4M16 3v4"/></symbol>
+  <symbol id="i-batt" viewBox="0 0 24 24"><rect x="3" y="8" width="15" height="9" rx="2"/><path d="M18 11h2.5v3H18"/><path d="m10 9.5-2.2 3.2H11L8.5 16"/></symbol>
+  <symbol id="i-stack" viewBox="0 0 24 24"><rect x="3" y="11" width="8" height="8" rx="1.5"/><rect x="13" y="11" width="8" height="8" rx="1.5"/><rect x="8" y="3" width="8" height="7" rx="1.5"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4 11-11"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4 2.5 20h19z"/><path d="M12 10v4.5"/><circle cx="12" cy="17.5" r=".7" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-hist" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.5-5.8"/><path d="M4 4v4h4"/><path d="M12 8v4l3 2"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v11M8 10l4 4 4-4"/><path d="M5 20h14"/></symbol>
+  <symbol id="i-cycle" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M18 3v4h-4M6 21v-4h4"/></symbol>
+</svg>
+
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-logo"><svg class="ico"><use href="#i-cube"/></svg></div><div class="brand-name">ERP</div></div>
+    <div class="nav-label">МОДУЛИ</div>
+    <nav class="nav">
+      <a class="nav-item"><svg class="ico"><use href="#i-home"/></svg>Главная</a>
+      <a class="nav-item"><svg class="ico"><use href="#i-crm"/></svg>CRM</a>
+      <a class="nav-item"><svg class="ico"><use href="#i-cart"/></svg>Закупки</a>
+      <a class="nav-item"><svg class="ico"><use href="#i-factory"/></svg>Производство</a>
+      <a class="nav-item active"><svg class="ico"><use href="#i-cube"/></svg>Склад</a>
+      <div class="subnav">
+        <a id="sub-ops" class="active" onclick="showTab('ops')">Операции</a>
+        <a onclick="gotoBoard('in')">Приёмка и размещение</a>
+        <a onclick="gotoBoard('out')">Сборка и отгрузка</a>
+        <a id="sub-stock" onclick="showTab('stock')">Остатки</a>
+        <a id="sub-returns" onclick="showTab('returns')">Возвраты</a>
+        <a id="sub-inv" onclick="showTab('inv')">Инвентаризация</a>
+      </div>
+      <a class="nav-item"><svg class="ico"><use href="#i-truck"/></svg>Логистика</a>
+      <a class="nav-item"><svg class="ico"><use href="#i-wallet"/></svg>Финансы</a>
+      <a class="nav-item"><svg class="ico"><use href="#i-mega"/></svg>Маркетинг</a>
+      <a class="nav-item"><svg class="ico"><use href="#i-support"/></svg>Сервис и поддержка</a>
+      <a class="nav-item"><svg class="ico"><use href="#i-hr"/></svg>HR</a>
+      <a class="nav-item"><svg class="ico"><use href="#i-chart"/></svg>Аналитика</a>
+      <a class="nav-item"><svg class="ico"><use href="#i-gear"/></svg>IT и настройки</a>
+    </nav>
+    <div class="user-card"><div class="avatar" style="background:#1E293B">ИП</div>
+      <div><div class="nm">Иван Петров</div><div class="rl">Администратор</div></div></div>
+  </aside>
+
+  <main class="main">
+
+    <div class="topbar">
+      <div class="crumb">Склад<span class="sep">/</span><span class="cur" id="crumb-cur">Операции</span></div>
+      <div class="topbar-tools">
+        <div class="search"><svg class="ico s"><use href="#i-search"/></svg><input placeholder="Поиск по складу…"></div>
+        <button class="btn"><svg class="ico s"><use href="#i-filter"/></svg>Фильтры</button>
+        <button class="btn"><svg class="ico s"><use href="#i-sliders"/></svg>Настроить</button>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn btn-primary"><svg class="ico s"><use href="#i-plus"/></svg>Создать поступление<svg class="ico xs"><use href="#i-chev"/></svg></button>
+      <div class="topbar-icons">
+        <button class="icon-btn"><svg class="ico s"><use href="#i-bell"/></svg><span class="dot"></span></button>
+        <button class="icon-btn"><svg class="ico s"><use href="#i-msg"/></svg></button>
+        <button class="icon-btn"><svg class="ico s"><use href="#i-help"/></svg></button>
+      </div>
+    </div>
+
+    <div class="tabbar">
+      <button class="tab active" id="tab-ops" onclick="showTab('ops')"><svg class="ico s"><use href="#i-cols"/></svg>Операции</button>
+      <button class="tab" id="tab-stock" onclick="showTab('stock')"><svg class="ico s"><use href="#i-table"/></svg>Остатки</button>
+      <button class="tab" id="tab-returns" onclick="showTab('returns')"><svg class="ico s"><use href="#i-cycle"/></svg>Возвраты</button>
+      <button class="tab" id="tab-inv" onclick="showTab('inv')"><svg class="ico s"><use href="#i-clip"/></svg>Инвентаризация</button>
+    </div>
+
+    <section id="view-ops" class="stage-all" style="display:flex;flex-direction:column;gap:16px">
+
+      <div class="stagebar">
+        <span class="lbl">Фокус по этапу:</span>
+        <div class="stage-seg">
+          <button class="on" onclick="setStage('all',this)"><svg class="ico xs"><use href="#i-grid"/></svg>Все</button>
+          <button onclick="setStage('receiving',this)"><svg class="ico xs"><use href="#i-inbound"/></svg>Приёмка</button>
+          <button onclick="setStage('picking',this)"><svg class="ico xs"><use href="#i-stack"/></svg>Сборка</button>
+          <button onclick="setStage('shipping',this)"><svg class="ico xs"><use href="#i-truck"/></svg>Отгрузка</button>
+          <button onclick="setStage('inventory',this)"><svg class="ico xs"><use href="#i-clip"/></svg>Инвентаризация</button>
+        </div>
+      </div>
+
+      <div id="toast-ops" class="toast"><svg class="ico s"><use href="#i-check"/></svg><span class="toast-txt"></span></div>
+
+      <div>
+        <div class="section-title">План на сегодня</div>
+        <div class="stat-cards" style="margin-top:10px">
+          <div class="stat"><div class="stat-top"><div class="stat-ico" style="background:var(--blue-soft);color:var(--blue)"><svg class="ico"><use href="#i-inbound"/></svg></div>
+            <div><div class="stat-lbl">Приёмки сегодня</div><div class="stat-val">8 <span class="tot">/ 12</span></div></div></div>
+            <div class="bar"><i style="width:67%;background:var(--blue)"></i></div><div class="stat-pct">67% выполнено</div></div>
+          <div class="stat"><div class="stat-top"><div class="stat-ico" style="background:var(--green-soft);color:var(--green)"><svg class="ico"><use href="#i-ruble"/></svg></div>
+            <div><div class="stat-lbl">Сумма к отгрузке</div><div class="stat-val">6,2 млн <span class="tot">/ 9 млн ₽</span></div></div></div>
+            <div class="bar"><i style="width:69%;background:var(--green)"></i></div><div class="stat-pct">69% выполнено</div></div>
+          <div class="stat"><div class="stat-top"><div class="stat-ico" style="background:var(--violet-soft);color:var(--violet)"><svg class="ico"><use href="#i-box2"/></svg></div>
+            <div><div class="stat-lbl">Заказов к сборке</div><div class="stat-val">18 <span class="tot">/ 25</span></div></div></div>
+            <div class="bar"><i style="width:72%;background:var(--violet)"></i></div><div class="stat-pct">72% выполнено</div></div>
+          <div class="stat"><div class="stat-top"><div class="stat-ico" style="background:var(--amber-soft);color:var(--amber)"><svg class="ico"><use href="#i-shield"/></svg></div>
+            <div><div class="stat-lbl">Контроль качества</div><div class="stat-val">6 <span class="tot">/ 10</span></div></div></div>
+            <div class="bar"><i style="width:60%;background:var(--amber)"></i></div><div class="stat-pct">60% выполнено</div></div>
+          <div class="stat"><div class="stat-top"><div class="stat-ico" style="background:var(--cyan-soft);color:var(--cyan)"><svg class="ico"><use href="#i-clip"/></svg></div>
+            <div><div class="stat-lbl">Инвентаризация · зона B</div><div class="stat-val">320 <span class="tot">/ 500 поз.</span></div></div></div>
+            <div class="bar"><i style="width:64%;background:var(--cyan)"></i></div><div class="stat-pct">64% пересчитано</div></div>
+        </div>
+      </div>
+
+      <div class="board-block" id="board-in">
+        <div class="board-title"><span class="tag in">Приёмка</span>Приёмка и размещение<span class="doc">входящий поток · документ заканчивается размещением</span></div>
+      <div class="kanban-scroll">
+        <div class="kanban">
+
+          <div class="col">
+            <div class="col-head col-head--blue"><div class="col-title">Ожидается поступление</div>
+              <div class="col-meta"><b>18</b> поступлений · <b>145</b> поз. · <b>9 200 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ПС-2024-0156</span><span class="grow"></span><span class="badge b-info">Сегодня</span><svg class="ico s star on"><use href="#i-star"/></svg></div>
+                <div class="c-name">ООО МеталлПром</div>
+                <div class="c-sub">Металлопрокат — 12 поз. · <span class="link">CRM-2024-0156</span></div>
+                <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Под клиента · отгрузка после приёмки</div>
+                <div class="c-amt">850 000 ₽</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-cal"/></svg>Ожидается: 12.05.2024 · поставщик</div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-inbound"/></svg>Создать приёмку</div><div class="pill"><svg class="ico xs"><use href="#i-doc"/></svg>Накладная</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Закупки: Иванов И.И.</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ПС-2024-0161</span><span class="grow"></span><span class="badge b-low">Завтра</span></div>
+                <div class="c-name">ООО СтройКомплект</div>
+                <div class="c-sub">Комплектующие — 30 поз. · пополнение остатков</div>
+                <div class="dest dest-stk"><svg class="ico xs"><use href="#i-cube"/></svg>На склад · в свободный остаток</div>
+                <div class="c-amt">1 250 000 ₽</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-cal"/></svg>Ожидается: 13.05.2024 · самовывоз</div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Петров П.П.</span><span class="date">06.06</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ПС-2024-0159</span><span class="grow"></span><span class="badge b-prod"><svg class="ico xs"><use href="#i-factory"/></svg>Из производства</span></div>
+                <div class="c-name">Партия №П-441</div>
+                <div class="c-sub">Готовые изделия — 8 поз. · заказ <span class="link">CRM-2024-0135</span></div>
+                <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Под клиента · отгрузка после приёмки</div>
+                <div class="c-amt">2 900 000 ₽</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-cal"/></svg>Готово к приёмке: 12.05.2024</div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-arrow"/></svg>Принять с производства</div></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить поступление</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--indigo"><div class="col-title">Приёмка / Пересчёт</div>
+              <div class="col-meta"><b>9</b> приёмок · <b>96</b> поз. · <b>6 400 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ПР-2024-0132</span><span class="grow"></span><span class="badge b-info">В работе</span><svg class="ico s dots"><use href="#i-dots"/></svg></div>
+                <div class="c-name">ООО Завод Прогресс</div>
+                <div class="c-sub">Оборудование · <span class="link">CRM-2024-0132</span></div>
+                <div class="panel-soft"><div class="ttl">Пересчёт</div>
+                  <div class="kv"><span>План</span><span>24 поз.</span></div>
+                  <div class="kv"><span>Принято</span><span>22 поз.</span></div>
+                  <div class="kv"><span>Отклонение</span><span class="neg">−2 поз.</span></div>
+                  <div class="kv"><span>Сумма отклонения</span><span class="neg">−180 000 ₽</span></div></div>
+                <div class="panel-soft"><div class="ttl">Назначение принятого</div>
+                  <div class="kv"><span>Под клиента · CRM-0132</span><span style="color:var(--teal)">16 поз. → отгрузка</span></div>
+                  <div class="kv"><span>На склад</span><span style="color:var(--steel-ink)">6 поз. → остаток</span></div></div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-check"/></svg>Завершить приёмку</div><div class="pill"><svg class="ico xs"><use href="#i-alert"/></svg>Акт расхождений</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ПР-2024-0128</span><span class="grow"></span><span class="badge b-prod"><svg class="ico xs"><use href="#i-factory"/></svg>Из производства</span></div>
+                <div class="c-name">Партия №П-438</div>
+                <div class="c-sub">Готовые изделия — 15 поз.</div>
+                <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Под клиента · CRM-0135</div>
+                <div class="c-line">План: 15 · Принято: 15 · <span class="pos">отклонений нет</span></div>
+                <div class="actions"><div class="act"><svg class="ico s"><use href="#i-doc"/></svg></div><div class="act"><svg class="ico s"><use href="#i-barcode"/></svg></div><div class="act"><svg class="ico s"><use href="#i-printer"/></svg></div><div class="act"><svg class="ico s"><use href="#i-cam"/></svg></div><div class="act"><svg class="ico s"><use href="#i-msg"/></svg></div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ПР-2024-0130</span><span class="grow"></span><span class="badge b-med">Средний</span></div>
+                <div class="c-name">ПАО Энергия</div>
+                <div class="c-sub">Расходные материалы — 18 поз. · пополнение</div>
+                <div class="dest dest-stk"><svg class="ico xs"><use href="#i-cube"/></svg>На склад · в свободный остаток</div>
+                <div class="c-line">Принято: 18 / 18 · <span class="pos">без расхождений</span></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Иванов И.И.</span><span class="date">11.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить приёмку</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--amber"><div class="col-title">Контроль качества</div>
+              <div class="col-meta"><b>7</b> партий · <b>62</b> поз. · <b>4 100 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ КК-2024-0121</span><span class="grow"></span><span class="badge b-high">Высокий</span></div>
+                <div class="c-name">ПАО ХимПром</div>
+                <div class="c-sub">Комплектующие — 40 поз. · <span class="link">CRM-2024-0121</span></div>
+                <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Под клиента</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-shield"/></svg>Проверено: 32 / 40</div>
+                <div class="c-line"><span class="badge b-high"><svg class="ico xs"><use href="#i-alert"/></svg>Брак: 2 поз.</span></div>
+                <div class="pills"><div class="pill ok"><svg class="ico xs"><use href="#i-check"/></svg>Принять качество</div><div class="pill"><svg class="ico xs"><use href="#i-alert"/></svg>Брак</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Кладовщик: Сидоров С.С.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ КК-2024-0124</span><span class="grow"></span><span class="badge b-med">Средний</span></div>
+                <div class="c-name">ООО СтройИнвест</div>
+                <div class="c-sub">Стройматериалы — 12 поз. · <span class="link">CRM-2024-0122</span></div>
+                <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Под клиента</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-shield"/></svg>Проверено: 12 / 12 · <span class="pos">брак 0</span></div>
+                <div class="actions"><div class="act"><svg class="ico s"><use href="#i-doc"/></svg></div><div class="act"><svg class="ico s"><use href="#i-barcode"/></svg></div><div class="act"><svg class="ico s"><use href="#i-printer"/></svg></div><div class="act"><svg class="ico s"><use href="#i-cam"/></svg></div><div class="act"><svg class="ico s"><use href="#i-msg"/></svg></div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span><span class="date">11.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить проверку</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--cyan"><div class="col-title">Размещение</div>
+              <div class="col-meta"><b>11</b> заданий · <b>88</b> поз. · <b>5 600 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ РЗ-2024-0140</span><span class="grow"></span><span class="badge b-info">Сегодня</span></div>
+                <div class="c-name">ООО МеталлПром</div>
+                <div class="c-sub">Металлопрокат — 12 поз. · <span class="link">CRM-2024-0156</span></div>
+                <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Под клиента · после размещения → в отгрузку</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-pin"/></svg>Зона A · Стеллаж 3 · Ячейка 12–15</div>
+                <div class="c-line">Размещено: 12 / 12 <span class="pos">· готово</span></div>
+                <div class="pills"><div class="pill go" onclick="gotoBoard('out')"><svg class="ico xs"><use href="#i-arrow"/></svg>Создать заказ на отгрузку</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ РЗ-2024-0142</span><span class="grow"></span><span class="badge b-med">Место не назначено</span></div>
+                <div class="c-name">ООО КомплектСнаб</div>
+                <div class="c-sub">Расходные материалы — 20 поз. · пополнение</div>
+                <div class="dest dest-stk"><svg class="ico xs"><use href="#i-cube"/></svg>На склад · после размещения → «Остатки»</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-alert"/></svg><span class="neg">Ячейка не назначена</span></div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-pin"/></svg>Назначить ячейку</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Иванов И.И.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ РЗ-2024-0138</span><span class="grow"></span><span class="badge b-low">Низкий</span></div>
+                <div class="c-name">ПАО Энергия</div>
+                <div class="c-sub">Расходники — 18 поз.</div>
+                <div class="dest dest-stk"><svg class="ico xs"><use href="#i-cube"/></svg>На склад · после размещения → «Остатки»</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-pin"/></svg>Зона C · Стеллаж 1 · Ячейка 4</div>
+                <div class="c-line">Размещено: 18 / 18 <span class="pos">· готово</span></div>
+                <div class="pills"><div class="pill stk" onclick="showTab('stock')"><svg class="ico xs"><use href="#i-cube"/></svg>Оприходовать в остаток</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span><span class="date">11.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить задание</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+      </div>
+
+      <div class="bridge">
+        <div class="bl"><svg class="ico s"><use href="#i-arrow"/></svg>После размещения товар расходится:</div>
+        <div class="route stk" onclick="showTab('stock')"><svg class="ico xs"><use href="#i-cube"/></svg>Под склад → Остатки (реестр)</div>
+        <div class="arr-d"><svg class="ico s"><use href="#i-chev"/></svg></div>
+        <div class="route cli" onclick="gotoBoard('out')"><svg class="ico xs"><use href="#i-user"/></svg>Под клиента → Заказ на отгрузку</div>
+        <div class="bl" style="color:var(--muted2);font-weight:500">· продажа со склада оформляется в CRM (резерв) и тоже создаёт заказ на отгрузку</div>
+      </div>
+
+      <div class="hint"><svg class="ico s"><use href="#i-shield"/></svg>Сборку запускает офис-менеджер или продавец кнопкой «Отправить на сборку» — склад сам её не начинает. Товарную накладную тоже формирует офис; склад выдаёт товар по подписанной ТН. Если команды на сборку нет дольше 4 рабочих часов — заказ подсвечивается складу, и склад может запросить запуск.</div>
+
+      <div class="board-block await-launch">
+        <div class="board-title"><span class="tag out" style="color:var(--steel-ink);background:var(--steel-soft)">Ожидание</span>Ожидают запуска из офиса<span class="doc">товар готов, но команды «Отправить на сборку» ещё нет</span></div>
+      <div class="kanban-scroll">
+        <div class="kanban">
+          <div class="col" style="width:340px">
+            <div class="col-head col-head--steel"><div class="col-title">Ждут команды «на сборку»</div>
+              <div class="col-meta"><b>2</b> заказа · <b>21</b> поз. · <b>1 730 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card await">
+                <div class="c-top"><span class="c-id">№ ЗО-2024-0168</span><span class="grow"></span><span class="wait-chip bad"><svg class="ico xs"><use href="#i-hist"/></svg>ждёт 1 дн 2 ч</span></div>
+                <div class="c-name">ООО РегионСталь</div>
+                <div class="c-sub">Металлопрокат — 15 поз. · <span class="link">CRM-2024-0149</span></div>
+                <div class="c-line"><svg class="ico s"><use href="#i-check"/></svg>Товар на складе · <span class="pos">готов к сборке</span></div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-alert"/></svg>Продавец не нажал «Отправить на сборку»</div>
+                <div class="c-amt">1 180 000 ₽</div>
+                <div class="pills"><div class="pill go" onclick="requestLaunch(this)"><svg class="ico xs"><use href="#i-msg"/></svg>Запросить запуск</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Ответственный в офисе: Петров П.П.</span></div>
+              </div>
+              <div class="card await">
+                <div class="c-top"><span class="c-id">№ ЗО-2024-0169</span><span class="grow"></span><span class="wait-chip warn"><svg class="ico xs"><use href="#i-hist"/></svg>ждёт 6 ч</span></div>
+                <div class="c-name">ООО ТехноСервис</div>
+                <div class="c-sub">Комплектующие — 6 поз. · <span class="link">CRM-2024-0151</span></div>
+                <div class="c-line"><svg class="ico s"><use href="#i-check"/></svg>Товар на складе · <span class="pos">готов к сборке</span></div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-alert"/></svg>Команда на сборку из офиса не поступила</div>
+                <div class="c-amt">550 000 ₽</div>
+                <div class="pills"><div class="pill go" onclick="requestLaunch(this)"><svg class="ico xs"><use href="#i-msg"/></svg>Запросить запуск</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Ответственный в офисе: Иванов И.И.</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+
+      <div class="board-block" id="board-out">
+        <div class="board-title"><span class="tag out">Отгрузка</span>Сборка и отгрузка<span class="doc">исходящий поток · отдельный документ «заказ на отгрузку»</span></div>
+      <div class="kanban-scroll">
+        <div class="kanban">
+
+          <div class="col st-pick">
+            <div class="col-head col-head--blue"><div class="col-title">Заказ на отгрузку</div>
+              <div class="col-meta"><b>9</b> заказов · <b>58</b> поз. · <b>4 200 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ЗО-2024-0170</span><span class="grow"></span><span class="badge b-info">Из приёмки</span></div>
+                <div class="c-name">ООО МеталлПром</div>
+                <div class="c-sub">Металлопрокат — 12 поз. · <span class="link">CRM-2024-0156</span></div>
+                <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Под клиента · РЗ-0140 размещено</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-arrow"/></svg>Отправлено на сборку: офис-менеджер · 09:20</div>
+                <div class="c-amt">850 000 ₽</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-pin"/></svg>Со склада: Зона A · Ст.3</div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-stack"/></svg>В сборку</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ЗО-2024-0172</span><span class="grow"></span><span class="badge b-steel"><svg class="ico xs"><use href="#i-cube"/></svg>Из остатка</span></div>
+                <div class="c-name">ООО ПромСнаб</div>
+                <div class="c-sub">Уплотнители резиновые — 24 поз. · <span class="link">CRM-2024-0140</span></div>
+                <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Продажа со склада · резерв в CRM</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-arrow"/></svg>Отправлено на сборку: продавец · 10:05</div>
+                <div class="c-amt">1 050 000 ₽</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-pin"/></svg>Резерв: Зона B · Ст.2 · Я.08</div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-stack"/></svg>В сборку</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Иванов И.И.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить заказ</div>
+            </div>
+          </div>
+
+          <div class="col st-pick">
+            <div class="col-head col-head--violet"><div class="col-title">Подготовка</div>
+              <div class="col-meta"><b>14</b> заданий · <b>70</b> поз. · <b>7 300 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ПД-2024-0150</span><span class="grow"></span><span class="badge b-prod"><svg class="ico xs"><use href="#i-batt"/></svg>Зарядка</span></div>
+                <div class="c-name">ООО ТехноСервис</div>
+                <div class="c-sub">Аккумуляторные блоки — 6 поз. · <span class="link">CRM-2024-0158</span></div>
+                <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Под клиента</div>
+                <div class="panel-soft"><div class="ttl">Подготовка</div>
+                  <div class="kv"><span>Зарядка</span><span>4 / 6</span></div>
+                  <div class="kv"><span>Депассивация</span><span>ожидает</span></div>
+                  <div class="kv"><span>Срок</span><span>12.05.2024</span></div></div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-arrow"/></svg>К упаковке</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ПД-2024-0151</span><span class="grow"></span><span class="badge b-info"><svg class="ico xs"><use href="#i-stack"/></svg>Сборка</span></div>
+                <div class="c-name">ООО СтройИнвест</div>
+                <div class="c-sub">Комплект оборудования · <span class="link">CRM-2024-0122</span></div>
+                <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Под клиента · резерв из остатка</div>
+                <div class="c-line">Собрано: 8 / 12 поз. · упаковка ожидает</div>
+                <div class="actions"><div class="act"><svg class="ico s"><use href="#i-doc"/></svg></div><div class="act"><svg class="ico s"><use href="#i-barcode"/></svg></div><div class="act"><svg class="ico s"><use href="#i-printer"/></svg></div><div class="act"><svg class="ico s"><use href="#i-cam"/></svg></div><div class="act"><svg class="ico s"><use href="#i-msg"/></svg></div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ПД-2024-0153</span><span class="grow"></span><span class="badge b-prod"><svg class="ico xs"><use href="#i-factory"/></svg>На производство</span></div>
+                <div class="c-name">ООО АльфаМеталл</div>
+                <div class="c-sub">Заготовки — 10 поз. · <span class="link">CRM-2024-0156</span></div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-arrow"/></svg>Передано 12.05 · ожидает возврата</div>
+                <div class="pills"><div class="pill"><svg class="ico xs"><use href="#i-hist"/></svg>Отслеживать заказ</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Иванов И.И.</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить задание</div>
+            </div>
+          </div>
+
+          <div class="col st-ship">
+            <div class="col-head col-head--teal"><div class="col-title">Готово к отгрузке</div>
+              <div class="col-meta"><b>16</b> заказов · <b>120</b> поз. · <b>6 800 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ОТ-2024-0160</span><span class="grow"></span><span class="badge b-info">Самовывоз сегодня</span><svg class="ico s star on"><use href="#i-star"/></svg></div>
+                <div class="c-name">ООО МеталлПром</div>
+                <div class="c-sub">Металлопрокат — 12 поз. · <span class="link">CRM-2024-0156</span></div>
+                <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Под клиента</div>
+                <div class="c-line">Упаковано: 12 / 12 <span class="pos">· документы готовы</span></div>
+                <div class="c-amt">850 000 ₽</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-truck"/></svg>Курьер 14:00</div>
+                <div class="tn"><div class="tn-h"><svg class="ico s"><use href="#i-doc"/></svg>Товарная накладная № ТН-0488</div>
+                  <div class="tn-st signed"><svg class="ico xs"><use href="#i-check"/></svg>Подписана клиентом</div>
+                  <div class="tn-by">Сформировал офис-менеджер · клиент подписал в офисе</div></div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-check"/></svg>Выдать по ТН</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ОТ-2024-0162</span><span class="grow"></span><span class="badge b-med">Доставка</span></div>
+                <div class="c-name">АО БетаТех</div>
+                <div class="c-sub">Оборудование — 6 поз.</div>
+                <div class="dest dest-cli"><svg class="ico xs"><use href="#i-user"/></svg>Под клиента</div>
+                <div class="c-line">Готово · <span class="pos">упаковано</span></div>
+                <div class="c-amt">3 750 000 ₽</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-truck"/></svg>Логистика · маршрут №12 · 13.05</div>
+                <div class="tn"><div class="tn-h"><svg class="ico s"><use href="#i-doc"/></svg>Товарная накладная № ТН-0489</div>
+                  <div class="tn-st wait"><svg class="ico xs"><use href="#i-hist"/></svg>Ожидает подписи в офисе</div>
+                  <div class="tn-by">Сформировал офис-менеджер · ещё не спущена на склад</div></div>
+                <div class="pills"><div class="pill go" disabled><svg class="ico xs"><use href="#i-check"/></svg>Выдать по ТН</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить заказ</div>
+            </div>
+          </div>
+
+          <div class="col st-ship">
+            <div class="col-head col-head--green"><div class="col-title">Отгружено: Успешно</div>
+              <div class="col-meta"><b>42</b> заказа · <b>845</b> поз. · <b>15 600 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ОТ-2024-0101</span><span class="grow"></span><span class="badge b-ok"><svg class="ico xs"><use href="#i-check"/></svg>Закрыто</span></div>
+                <div class="c-name">ООО РегионСталь</div>
+                <div class="c-sub">Металл — 12 поз. · <span class="link">CRM-2024-0101</span></div>
+                <div class="c-line"><svg class="ico s"><use href="#i-cal"/></svg>Отгружено 12.05.2024 · 2 100 000 ₽</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-doc"/></svg>Документы подписаны</div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Петров П.П.</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ОТ-2024-0102</span><span class="grow"></span><span class="badge b-ok"><svg class="ico xs"><use href="#i-check"/></svg>Закрыто</span></div>
+                <div class="c-name">АО БетаТех</div>
+                <div class="c-sub">Оборудование — 6 поз.</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-cal"/></svg>Отгружено 11.05.2024 · 3 750 000 ₽</div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Иванов И.И.</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ОТ-2024-0103</span><span class="grow"></span><span class="badge b-ok"><svg class="ico xs"><use href="#i-check"/></svg>Закрыто</span></div>
+                <div class="c-name">ООО Стандарт</div>
+                <div class="c-sub">Комплектующие — 9 поз. · продано со склада</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-cal"/></svg>Отгружено 10.05.2024 · 680 000 ₽</div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+      </div>
+
+      <div class="summary">
+        <div class="summary-head"><div class="t">Итоги по складу</div>
+          <div class="period"><svg class="ico s"><use href="#i-cal"/></svg>01.05.2024 – 31.05.2024</div></div>
+        <div class="summary-grid">
+          <div class="metric"><div class="ml">Позиций принято</div><div class="mv">1 248</div><div class="md neutral">под клиента 760 · на склад 488</div></div>
+          <div class="metric"><div class="ml">Отклонения при пересчёте</div><div class="mv sm down">−18 поз. / −420 000 ₽</div><div class="md down">0,3% от объёма</div></div>
+          <div class="metric"><div class="ml">Позиций собрано</div><div class="mv">892</div><div class="md up">+8% к прошлому периоду</div></div>
+          <div class="metric"><div class="ml">Заказов отгружено</div><div class="mv">42</div><div class="md neutral">845 поз.</div></div>
+          <div class="metric"><div class="ml">Сумма отгрузок</div><div class="mv sm">15 600 000 ₽</div><div class="md up">+10% к прошлому периоду</div></div>
+          <div class="metric"><div class="ml">Точность инвентаризации</div><div class="mv">98,6%</div><div class="md up">+0,4% к прошлому периоду</div></div>
+        </div>
+      </div>
+
+    </section>
+
+    <section id="view-stock" style="display:none;flex-direction:column;gap:16px">
+
+      <div id="toast" class="toast"><svg class="ico s"><use href="#i-check"/></svg><span class="toast-txt"></span></div>
+
+      <div class="stock-kpis">
+        <div class="kpi"><div class="kl">SKU всего</div><div class="kv2">248</div><div class="kd">активных позиций</div></div>
+        <div class="kpi"><div class="kl">Стоимость остатков</div><div class="kv2 sm">12 400 000 ₽</div><div class="kd">по себестоимости</div></div>
+        <div class="kpi"><div class="kl">Свободно</div><div class="kv2">1 408</div><div class="kd">поз. к продаже</div></div>
+        <div class="kpi"><div class="kl">В резерве</div><div class="kv2">152</div><div class="kd">поз. под сделки</div></div>
+        <div class="kpi"><div class="kl">Ниже минимума</div><div class="kv2 warn">12</div><div class="kd">SKU → пополнить</div></div>
+        <div class="kpi"><div class="kl">Неликвид / медленные</div><div class="kv2 bad">18</div><div class="kd">SKU → распродать</div></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="search"><svg class="ico s"><use href="#i-search"/></svg><input placeholder="Поиск по SKU / наименованию…"></div>
+        <div class="fpills">
+          <button class="fp on">Все</button>
+          <button class="fp">В норме</button>
+          <button class="fp">Ниже минимума</button>
+          <button class="fp">Нет в наличии</button>
+          <button class="fp">Медленные</button>
+          <button class="fp">Неликвид</button>
+        </div>
+        <div class="spacer"></div>
+        <button class="btn"><svg class="ico s"><use href="#i-download"/></svg>Экспорт</button>
+      </div>
+
+      <div class="hint"><svg class="ico s"><use href="#i-shield"/></svg>«В резерве» — брони, созданные в CRM при продаже. Кладовщик их видит, но не создаёт: резервирование под клиента выполняется менеджером в карточке сделки.</div>
+
+      <div class="table-wrap"><div class="tscroll">
+        <table class="stock">
+          <thead><tr>
+            <th>Номенклатура</th><th>Свободно</th><th>В резерве <span class="th-note">из CRM · просмотр</span></th><th>Ячейка</th>
+            <th>ABC</th><th>Оборот / статус</th><th>Стоимость</th><th>Складские операции</th>
+          </tr></thead>
+          <tbody>
+            <tr>
+              <td class="nm-cell"><div class="n">Уплотнители резиновые</div><div class="meta">УПЛ-RUB-50 · ПромРезина</div></td>
+              <td><span class="qty free">96</span></td>
+              <td class="resv-cell"><div class="r resv">24</div><div class="deal">CRM-0140</div></td>
+              <td><span class="cell-loc"><svg class="ico s"><use href="#i-pin"/></svg>B · Ст.2 · Я.08</span></td>
+              <td><span class="abc abc-A">A</span></td>
+              <td><span class="badge b-ok">В норме</span><div class="por">min 40 / max 200</div></td>
+              <td><span class="price">3 200 000 ₽</span></td>
+              <td><div class="act-cell"><span class="io" title="К ячейке"><svg class="ico s"><use href="#i-pin"/></svg></span><span class="io" title="Печать этикетки"><svg class="ico s"><use href="#i-printer"/></svg></span><span class="io" title="Пересчёт позиции"><svg class="ico s"><use href="#i-barcode"/></svg></span><span class="io" title="Внутреннее перемещение"><svg class="ico s"><use href="#i-cycle"/></svg></span><span class="io" title="Брак / карантин"><svg class="ico s"><use href="#i-alert"/></svg></span></div></td>
+            </tr>
+            <tr>
+              <td class="nm-cell"><div class="n">Расходные материалы</div><div class="meta">РСХ-EN-18 · ПАО Энергия</div></td>
+              <td><span class="qty free">18</span></td>
+              <td class="resv-cell"><div class="r resv">0</div></td>
+              <td><span class="cell-loc"><svg class="ico s"><use href="#i-pin"/></svg>C · Ст.1 · Я.4</span></td>
+              <td><span class="abc abc-B">B</span></td>
+              <td><span class="badge b-ok">В норме</span><div class="por">min 10 / max 60</div></td>
+              <td><span class="price">540 000 ₽</span></td>
+              <td><div class="act-cell"><span class="io" title="К ячейке"><svg class="ico s"><use href="#i-pin"/></svg></span><span class="io" title="Печать этикетки"><svg class="ico s"><use href="#i-printer"/></svg></span><span class="io" title="Пересчёт позиции"><svg class="ico s"><use href="#i-barcode"/></svg></span><span class="io" title="Внутреннее перемещение"><svg class="ico s"><use href="#i-cycle"/></svg></span><span class="io" title="Брак / карантин"><svg class="ico s"><use href="#i-alert"/></svg></span></div></td>
+            </tr>
+            <tr>
+              <td class="nm-cell"><div class="n">Метизы М8×40</div><div class="meta">МТЗ-M8-40 · КомплектСнаб</div></td>
+              <td><span class="qty free">6</span></td>
+              <td class="resv-cell"><div class="r resv">0</div></td>
+              <td><span class="cell-loc"><svg class="ico s"><use href="#i-pin"/></svg>A · Ст.5</span></td>
+              <td><span class="abc abc-C">C</span></td>
+              <td><span class="badge b-med"><svg class="ico xs"><use href="#i-alert"/></svg>Ниже минимума</span><div class="por">min 20 / max 100</div></td>
+              <td><span class="price">90 000 ₽</span></td>
+              <td><div class="act-cell"><button class="btn-sm go" onclick="signalProcurement(this)"><svg class="ico xs"><use href="#i-cart"/></svg>Сигнал в Закупки</button><span class="io" title="К ячейке"><svg class="ico s"><use href="#i-pin"/></svg></span><span class="io" title="Пересчёт позиции"><svg class="ico s"><use href="#i-barcode"/></svg></span><span class="io" title="Внутреннее перемещение"><svg class="ico s"><use href="#i-cycle"/></svg></span></div></td>
+            </tr>
+            <tr>
+              <td class="nm-cell"><div class="n">Профиль алюминиевый 40×40</div><div class="meta">ПРФ-AL-40 · МеталлПром</div></td>
+              <td><span class="qty free">210</span></td>
+              <td class="resv-cell"><div class="r resv">30</div><div class="deal">CRM-0156</div></td>
+              <td><span class="cell-loc"><svg class="ico s"><use href="#i-pin"/></svg>A · Ст.3</span></td>
+              <td><span class="abc abc-B">B</span></td>
+              <td><span class="badge b-ok">В норме</span><div class="por">min 50 / max 300</div></td>
+              <td><span class="price">1 850 000 ₽</span></td>
+              <td><div class="act-cell"><span class="io" title="К ячейке"><svg class="ico s"><use href="#i-pin"/></svg></span><span class="io" title="Печать этикетки"><svg class="ico s"><use href="#i-printer"/></svg></span><span class="io" title="Пересчёт позиции"><svg class="ico s"><use href="#i-barcode"/></svg></span><span class="io" title="Внутреннее перемещение"><svg class="ico s"><use href="#i-cycle"/></svg></span><span class="io" title="Брак / карантин"><svg class="ico s"><use href="#i-alert"/></svg></span></div></td>
+            </tr>
+            <tr>
+              <td class="nm-cell"><div class="n">Крепёж нержавеющий А2</div><div class="meta">КРП-INX-A2 · МетизТорг</div></td>
+              <td><span class="qty free">340</span></td>
+              <td class="resv-cell"><div class="r resv">0</div></td>
+              <td><span class="cell-loc"><svg class="ico s"><use href="#i-pin"/></svg>D · Ст.1</span></td>
+              <td><span class="abc abc-C">C</span></td>
+              <td><span class="badge b-steel"><svg class="ico xs"><use href="#i-hist"/></svg>Медленный · 112 дн</span><div class="por">min 30 / max 150</div></td>
+              <td><span class="price">1 020 000 ₽</span></td>
+              <td><div class="act-cell"><span class="io" title="К ячейке"><svg class="ico s"><use href="#i-pin"/></svg></span><span class="io" title="Печать этикетки"><svg class="ico s"><use href="#i-printer"/></svg></span><span class="io" title="Пересчёт позиции"><svg class="ico s"><use href="#i-barcode"/></svg></span><span class="io" title="Внутреннее перемещение"><svg class="ico s"><use href="#i-cycle"/></svg></span><span class="io" title="Брак / карантин"><svg class="ico s"><use href="#i-alert"/></svg></span></div></td>
+            </tr>
+            <tr>
+              <td class="nm-cell"><div class="n">Кабель ВВГ 3×2.5</div><div class="meta">КБЛ-VVG-25 · ЭлектроСнаб</div></td>
+              <td><span class="qty free zero">0</span></td>
+              <td class="resv-cell"><div class="r resv">0</div></td>
+              <td><span class="cell-loc" style="color:var(--muted2)">—</span></td>
+              <td><span class="abc abc-B">B</span></td>
+              <td><span class="badge b-high"><svg class="ico xs"><use href="#i-alert"/></svg>Нет в наличии</span><div class="por">min 100 / max 400</div></td>
+              <td><span class="price zero">0 ₽</span></td>
+              <td><div class="act-cell"><button class="btn-sm go" onclick="signalProcurement(this)"><svg class="ico xs"><use href="#i-cart"/></svg>Сигнал в Закупки</button></div></td>
+            </tr>
+            <tr>
+              <td class="nm-cell"><div class="n">Фитинги латунные (старый тип)</div><div class="meta">ФИТ-BR-OLD · снят с продаж</div></td>
+              <td><span class="qty free">80</span></td>
+              <td class="resv-cell"><div class="r resv">0</div></td>
+              <td><span class="cell-loc"><svg class="ico s"><use href="#i-pin"/></svg>E · Ст.2</span></td>
+              <td><span class="abc abc-C">C</span></td>
+              <td><span class="badge b-dead"><svg class="ico xs"><use href="#i-alert"/></svg>Неликвид · 210 дн</span><div class="por">min 0</div></td>
+              <td><span class="price">240 000 ₽</span></td>
+              <td><div class="act-cell"><span class="io" title="К ячейке"><svg class="ico s"><use href="#i-pin"/></svg></span><span class="io" title="Печать этикетки"><svg class="ico s"><use href="#i-printer"/></svg></span><span class="io" title="Пересчёт позиции"><svg class="ico s"><use href="#i-barcode"/></svg></span><span class="io" title="Внутреннее перемещение"><svg class="ico s"><use href="#i-cycle"/></svg></span><span class="io" title="Брак / карантин"><svg class="ico s"><use href="#i-alert"/></svg></span></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div></div>
+
+    </section>
+
+    <section id="view-returns" style="display:none;flex-direction:column;gap:16px">
+
+      <div class="stock-kpis">
+        <div class="kpi"><div class="kl">Возвратов открыто</div><div class="kv2">7</div><div class="kd">в работе</div></div>
+        <div class="kpi"><div class="kl">Позиций в возврате</div><div class="kv2">84</div><div class="kd">шт к обработке</div></div>
+        <div class="kpi"><div class="kl">% от отгрузок</div><div class="kv2">1,8%</div><div class="kd">за месяц</div></div>
+        <div class="kpi"><div class="kl">Брак / несоответствие</div><div class="kv2 bad">12</div><div class="kd">поз. → карантин</div></div>
+        <div class="kpi"><div class="kl">Вернётся в остаток</div><div class="kv2">58</div><div class="kd">поз. годных</div></div>
+        <div class="kpi"><div class="kl">Сумма возвратов</div><div class="kv2 sm">640 000 ₽</div><div class="kd">за месяц</div></div>
+      </div>
+
+      <div class="hint"><svg class="ico s"><use href="#i-shield"/></svg>Склад принимает и проверяет возврат физически. Возврат средств или замена оформляется в CRM/финансах; причины и % брака питают рейтинг поставщика и контроль качества.</div>
+
+      <div class="kanban-scroll">
+        <div class="kanban">
+
+          <div class="col">
+            <div class="col-head col-head--blue"><div class="col-title">Заявка на возврат</div>
+              <div class="col-meta"><b>3</b> заявки · <b>11</b> поз. · <b>360 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ВЗ-2024-0051</span><span class="grow"></span><span class="badge b-med">Пересорт</span></div>
+                <div class="c-name">ООО РегионСталь</div>
+                <div class="c-sub">По отгрузке <span class="link">ОТ-2024-0101</span> · <span class="link">CRM-2024-0101</span></div>
+                <div class="c-line"><svg class="ico s"><use href="#i-box2"/></svg>4 поз. · 180 000 ₽</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-msg"/></svg>Клиент: получили не ту позицию</div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-inbound"/></svg>Принять возврат</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Менеджер: Петров П.П.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ВЗ-2024-0053</span><span class="grow"></span><span class="badge b-high">Гарантия / брак</span></div>
+                <div class="c-name">АО БетаТех</div>
+                <div class="c-sub">По отгрузке <span class="link">ОТ-2024-0102</span></div>
+                <div class="c-line"><svg class="ico s"><use href="#i-box2"/></svg>2 поз. · 95 000 ₽</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-alert"/></svg>Неисправность при вводе в эксплуатацию</div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-inbound"/></svg>Принять возврат</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Иванов И.И.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Создать возврат</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--indigo"><div class="col-title">Приёмка возврата</div>
+              <div class="col-meta"><b>2</b> возврата · <b>14</b> поз. · <b>210 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ВЗ-2024-0048</span><span class="grow"></span><span class="badge b-low">Не подошёл</span></div>
+                <div class="c-name">ООО Стандарт</div>
+                <div class="c-sub">По отгрузке <span class="link">ОТ-2024-0103</span></div>
+                <div class="panel-soft"><div class="ttl">Обратный пересчёт</div>
+                  <div class="kv"><span>Заявлено</span><span>6 поз.</span></div>
+                  <div class="kv"><span>Принято</span><span>6 поз.</span></div>
+                  <div class="kv"><span>Расхождение</span><span class="pos">нет</span></div></div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-shield"/></svg>На проверку</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить возврат</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--amber"><div class="col-title">Проверка состояния</div>
+              <div class="col-meta"><b>2</b> возврата · <b>16</b> поз. · <b>240 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ВЗ-2024-0045</span><span class="grow"></span><span class="badge b-low">Излишки</span></div>
+                <div class="c-name">ООО СтройИнвест</div>
+                <div class="c-sub">По отгрузке <span class="link">ОТ-2024-0122</span></div>
+                <div class="c-line"><svg class="ico s"><use href="#i-shield"/></svg>Проверено: 8 / 12</div>
+                <div class="c-line"><span class="badge b-ok">Годен: 8</span> <span class="badge b-high">Брак: 0</span></div>
+                <div class="pills"><div class="pill ok"><svg class="ico xs"><use href="#i-check"/></svg>Годен → в остаток</div><div class="pill"><svg class="ico xs"><use href="#i-alert"/></svg>В брак</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Кладовщик: Сидоров С.С.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--cyan"><div class="col-title">Решение / диспозиция</div>
+              <div class="col-meta"><b>1</b> возврат · <b>10</b> поз. · <b>140 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ВЗ-2024-0042</span><span class="grow"></span><span class="badge b-high">Брак</span></div>
+                <div class="c-name">ПАО ХимПром</div>
+                <div class="c-sub">По отгрузке <span class="link">ОТ-2024-0121</span></div>
+                <div class="panel-soft"><div class="ttl">Куда направить</div>
+                  <div class="kv"><span>В остаток (годное)</span><span style="color:var(--teal)">7 поз.</span></div>
+                  <div class="kv"><span>В брак / карантин</span><span class="neg">2 поз.</span></div>
+                  <div class="kv"><span>Поставщику</span><span style="color:var(--steel-ink)">1 поз.</span></div></div>
+                <div class="dest dest-stk"><svg class="ico xs"><use href="#i-wallet"/></svg>Возврат средств / замена — в CRM/финансах</div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-check"/></svg>Оформить диспозицию</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span><span class="date">11.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--green"><div class="col-title">Закрыто</div>
+              <div class="col-meta"><b>23</b> возврата · <b>33</b> поз. · <b>410 000 ₽</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ВЗ-2024-0039</span><span class="grow"></span><span class="badge b-ok"><svg class="ico xs"><use href="#i-check"/></svg>Закрыто</span></div>
+                <div class="c-name">ООО МеталлПром</div>
+                <div class="c-sub">Пересорт · 5 поз.</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-cube"/></svg>4 поз. → в остаток · 1 поз. → поставщику</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-cal"/></svg>Закрыто 10.05.2024</div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ВЗ-2024-0038</span><span class="grow"></span><span class="badge b-ok"><svg class="ico xs"><use href="#i-check"/></svg>Закрыто</span></div>
+                <div class="c-name">ООО ТехноСервис</div>
+                <div class="c-sub">Гарантийный · 2 поз.</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-wallet"/></svg>Замена выдана (оформлено в CRM)</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-cal"/></svg>Закрыто 09.05.2024</div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Иванов И.И.</span></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </section>
+
+    <section id="view-inv" style="display:none;flex-direction:column;gap:16px">
+
+      <div class="stock-kpis">
+        <div class="kpi"><div class="kl">Активные инвентаризации</div><div class="kv2">5</div><div class="kd">в работе</div></div>
+        <div class="kpi"><div class="kl">Пересчитано за месяц</div><div class="kv2">1 820</div><div class="kd">позиций</div></div>
+        <div class="kpi"><div class="kl">Точность учёта</div><div class="kv2">98,6%</div><div class="kd">по закрытым актам</div></div>
+        <div class="kpi"><div class="kl">Недостачи</div><div class="kv2 bad">−26</div><div class="kd">поз. за месяц</div></div>
+        <div class="kpi"><div class="kl">Излишки</div><div class="kv2">+9</div><div class="kd">поз. за месяц</div></div>
+        <div class="kpi"><div class="kl">Корректировки в 1С</div><div class="kv2 sm bad">−298 000 ₽</div><div class="kd">за месяц</div></div>
+      </div>
+
+      <div class="hint"><svg class="ico s"><use href="#i-shield"/></svg>Кладовщик пересчитывает и фиксирует факт (слепой пересчёт — без учётных цифр). Сличительную ведомость утверждает заведующий складом; корректировка остатков проводится документом в 1С после подтверждения бухгалтерии.</div>
+
+      <div class="kanban-scroll">
+        <div class="kanban">
+
+          <div class="col">
+            <div class="col-head col-head--blue"><div class="col-title">Запланирована</div>
+              <div class="col-meta"><b>2</b> инвентаризации · <b>426</b> поз. план</div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ИН-2024-0012</span><span class="grow"></span><span class="badge b-info">Плановая</span></div>
+                <div class="c-name">Зона C · циклический пересчёт</div>
+                <div class="c-sub">По графику ABC · 420 поз.</div>
+                <div class="panel-soft"><div class="ttl">График циклов (ABC)</div>
+                  <div class="kv"><span>A-позиции</span><span>ежемесячно</span></div>
+                  <div class="kv"><span>B-позиции</span><span>раз в квартал</span></div>
+                  <div class="kv"><span>C-позиции</span><span>раз в полгода · эта</span></div></div>
+                <div class="c-line"><svg class="ico s"><use href="#i-cal"/></svg>Старт: 14.05.2024 · слепой пересчёт</div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-clip"/></svg>Начать пересчёт</div><div class="pill"><svg class="ico xs"><use href="#i-printer"/></svg>Счётные листы</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Кладовщик: Сидоров С.С.</span><span class="date">14.05</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ИН-2024-0013</span><span class="grow"></span><span class="badge b-med">Внеплановая</span></div>
+                <div class="c-name">Ячейка A · Ст.5 · Метизы М8×40</div>
+                <div class="c-sub">Триггер: расхождение при отборе (ПД-0151)</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-alert"/></svg>Учёт: 6 · сборщик нашёл: 4 · <span class="neg">−2 поз.</span></div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-barcode"/></svg>Пересчитать ячейку</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Кладовщик: Сидоров С.С.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Запланировать инвентаризацию</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--indigo"><div class="col-title">Пересчёт</div>
+              <div class="col-meta"><b>1</b> в работе · <b>500</b> поз.</div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ИН-2024-0011</span><span class="grow"></span><span class="badge b-info">В работе</span><svg class="ico s star on"><use href="#i-star"/></svg></div>
+                <div class="c-name">Зона B · полная</div>
+                <div class="c-sub">Плановая · слепой пересчёт</div>
+                <div class="panel-soft"><div class="ttl">Прогресс</div>
+                  <div class="kv"><span>Пересчитано</span><span>320 / 500 поз.</span></div>
+                  <div class="kv"><span>Спорных (повторный счёт)</span><span class="neg">3 поз.</span></div>
+                  <div class="kv"><span>Срок</span><span>13.05.2024</span></div></div>
+                <div class="bar"><i style="width:64%;background:var(--indigo)"></i></div>
+                <div class="stat-pct">64% пересчитано · зона на время счёта закрыта для отбора</div>
+                <div class="pills"><div class="pill go"><svg class="ico xs"><use href="#i-check"/></svg>Внести результаты</div><div class="pill"><svg class="ico xs"><use href="#i-cycle"/></svg>Повторный счёт</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Кладовщик: Сидоров С.С.</span><span class="date">12.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить зону</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--amber"><div class="col-title">Сверка расхождений</div>
+              <div class="col-meta"><b>1</b> сличение · <b>1 240</b> поз. учёт</div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ИН-2024-0010</span><span class="grow"></span><span class="badge b-med">Расхождения</span></div>
+                <div class="c-name">Зона D · выборочная</div>
+                <div class="c-sub">Сличительная ведомость · учёт vs факт</div>
+                <div class="panel-soft"><div class="ttl">Сличение</div>
+                  <div class="kv"><span>Учёт</span><span>1 240 поз.</span></div>
+                  <div class="kv"><span>Факт</span><span>1 232 поз.</span></div>
+                  <div class="kv"><span>Недостача</span><span class="neg">−10 поз.</span></div>
+                  <div class="kv"><span>Излишки</span><span class="pos">+2 поз.</span></div>
+                  <div class="kv"><span>Сумма</span><span class="neg">−96 000 ₽</span></div></div>
+                <div class="panel-soft"><div class="ttl">Топ расхождений</div>
+                  <div class="kv"><span>Крепёж нержавеющий А2</span><span class="neg">−5</span></div>
+                  <div class="kv"><span>Профиль алюминиевый 40×40</span><span class="neg">−3</span></div>
+                  <div class="kv"><span>Хомуты монтажные</span><span class="neg">−2</span></div>
+                  <div class="kv"><span>Фитинги латунные</span><span class="pos">+2</span></div></div>
+                <div class="pills"><div class="pill"><svg class="ico xs"><use href="#i-cycle"/></svg>Повторный пересчёт</div><div class="pill go"><svg class="ico xs"><use href="#i-doc"/></svg>Сформировать акт</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Кладовщик: Сидоров С.С.</span><span class="date">11.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--cyan"><div class="col-title">Корректировка / согласование</div>
+              <div class="col-meta"><b>1</b> акт · <b>−162 000 ₽</b> к корректировке</div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ИН-2024-0009</span><span class="grow"></span><span class="badge b-high">Ждёт бухгалтерию</span></div>
+                <div class="c-name">Зона E · полная</div>
+                <div class="c-sub">Акт инвентаризации сформирован</div>
+                <div class="panel-soft"><div class="ttl">К корректировке</div>
+                  <div class="kv"><span>Недостача</span><span class="neg">−16 поз. / −214 000 ₽</span></div>
+                  <div class="kv"><span>Излишки</span><span class="pos">+7 поз. / +52 000 ₽</span></div>
+                  <div class="kv"><span>Итого</span><span class="neg">−162 000 ₽</span></div></div>
+                <div class="c-line"><svg class="ico s"><use href="#i-check"/></svg>Кладовщик: утвердил · <span class="neg">бухгалтерия: ожидает</span></div>
+                <div class="dest dest-stk"><svg class="ico xs"><use href="#i-doc"/></svg>Корректировка остатков — документом в 1С после утверждения</div>
+                <div class="pills"><div class="pill"><svg class="ico xs"><use href="#i-doc"/></svg>Открыть акт</div><div class="pill"><svg class="ico xs"><use href="#i-msg"/></svg>Напомнить бухгалтерии</div></div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Согласует: Главбух</span><span class="date">11.05</span></div>
+              </div>
+              <div class="add-card"><svg class="ico s"><use href="#i-plus"/></svg>Добавить</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="col-head col-head--green"><div class="col-title">Закрыто</div>
+              <div class="col-meta"><b>6</b> за месяц · точность <b>98,6%</b></div></div>
+            <div class="col-body">
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ИН-2024-0008</span><span class="grow"></span><span class="badge b-ok"><svg class="ico xs"><use href="#i-check"/></svg>Закрыто</span></div>
+                <div class="c-name">Зона A · полная</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-shield"/></svg>Расхождений нет · точность 99,4%</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-cal"/></svg>Закрыто 10.05.2024</div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Сидоров С.С.</span></div>
+              </div>
+              <div class="card">
+                <div class="c-top"><span class="c-id">№ ИН-2024-0007</span><span class="grow"></span><span class="badge b-ok"><svg class="ico xs"><use href="#i-check"/></svg>Закрыто</span></div>
+                <div class="c-name">Ячейка D · Ст.1 · внеплановая</div>
+                <div class="c-line"><svg class="ico s"><use href="#i-doc"/></svg>Корректировка −2 поз. · проведена в 1С</div>
+                <div class="c-line muted"><svg class="ico s"><use href="#i-cal"/></svg>Закрыто 08.05.2024</div>
+                <div class="c-foot"><span class="who"><svg class="ico s"><use href="#i-user"/></svg>Иванов И.И.</span></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <aside class="chat">
+    <div class="chat-head"><div class="t">Чаты и дела</div><div class="add"><svg class="ico s"><use href="#i-plus"/></svg></div></div>
+    <div class="chat-list">
+      <div class="chat-row"><div class="chat-av"><div class="avatar" style="background:#2563EB"><svg class="ico s"><use href="#i-cart"/></svg></div><span class="badge-n">2</span></div>
+        <div class="chat-body"><div class="nm">Отдел закупок<span class="tm">10:24</span></div><div class="msg">Поставка по CRM-0156 завтра к 14:00 — под клиента, готовьте к отгрузке.</div></div></div>
+      <div class="chat-row"><div class="chat-av"><div class="avatar" style="background:#7C3AED"><svg class="ico s"><use href="#i-factory"/></svg></div><span class="badge-n">1</span></div>
+        <div class="chat-body"><div class="nm">Производство<span class="tm">09:58</span></div><div class="msg">Партия №П-441 готова к приёмке на склад.</div></div></div>
+      <div class="chat-row"><div class="chat-av"><div class="avatar" style="background:#D97706"><svg class="ico s"><use href="#i-shield"/></svg></div></div>
+        <div class="chat-body"><div class="nm">ОТК · Качество<span class="tm">09:41</span></div><div class="msg">По приёмке ПР-0132 выявлен брак 2 поз., нужен акт.</div></div></div>
+      <div class="chat-row"><div class="chat-av"><div class="avatar" style="background:#0D9488"><svg class="ico s"><use href="#i-truck"/></svg></div><span class="badge-n">3</span></div>
+        <div class="chat-body"><div class="nm">Отдел логистики<span class="tm">09:15</span></div><div class="msg">Машина прибудет в 14:00, разгрузка — зона A.</div></div></div>
+      <div class="chat-row"><div class="chat-av"><div class="avatar" style="background:#475569">СС</div></div>
+        <div class="chat-body"><div class="nm">Сидоров С.С.<span class="tm">Вчера</span></div><div class="msg">Партию ПР-0130 оприходовал в остаток (зона C).</div></div></div>
+      <div class="chat-row"><div class="chat-av"><div class="avatar" style="background:#0EA5E9">ИИ</div><span class="badge-n">2</span></div>
+        <div class="chat-body"><div class="nm">Иванов И.И. (CRM)<span class="tm">Вчера</span></div><div class="msg">Продал уплотнители со склада — зарезервировал 24 поз. под CRM-0140.</div></div></div>
+      <div class="chat-row"><div class="chat-av"><div class="avatar" style="background:#0891B2"><svg class="ico s"><use href="#i-clip"/></svg></div></div>
+        <div class="chat-body"><div class="nm">Инвентаризация<span class="tm">Вчера</span></div><div class="msg">Зона B: расхождений по количеству не выявлено.</div></div></div>
+      <div class="chat-row"><div class="chat-av"><div class="avatar" style="background:#993C1D"><svg class="ico s"><use href="#i-alert"/></svg></div></div>
+        <div class="chat-body"><div class="nm">Аналитика склада<span class="tm">11.05</span></div><div class="msg">Фитинги латунные — 210 дн без движения, кандидат на распродажу.</div></div></div>
+    </div>
+    <div class="chat-foot"><a href="#">Все чаты и дела <svg class="ico s"><use href="#i-arrow"/></svg></a></div>
+  </aside>
+
+</div>
+
+<script>
+function showTab(name){
+  var views = {ops:'view-ops', stock:'view-stock', returns:'view-returns', inv:'view-inv'};
+  var labels = {ops:'Операции', stock:'Остатки', returns:'Возвраты', inv:'Инвентаризация'};
+  for(var k in views){ var v=document.getElementById(views[k]); if(v) v.style.display = (k===name)?'flex':'none'; }
+  ['ops','stock','returns','inv'].forEach(function(k){
+    var tb=document.getElementById('tab-'+k); if(tb) tb.classList.toggle('active', k===name);
+    var sb=document.getElementById('sub-'+k); if(sb) sb.classList.toggle('active', k===name);
+  });
+  document.getElementById('crumb-cur').textContent = labels[name] || 'Операции';
+}
+function gotoBoard(which){
+  showTab('ops');
+  var el = document.getElementById(which==='in' ? 'board-in' : 'board-out');
+  if(el) el.scrollIntoView({behavior:'smooth', block:'start'});
+}
+function signalProcurement(btn){
+  var row = btn.closest('tr');
+  var name = row.querySelector('.nm-cell .n') ? row.querySelector('.nm-cell .n').textContent : 'позиции';
+  var t = document.getElementById('toast');
+  t.querySelector('.toast-txt').textContent = 'Потребность по «' + name + '» отправлена в Закупки — решение принимает закупщик.';
+  t.classList.remove('show'); void t.offsetWidth; t.classList.add('show');
+  clearTimeout(window.__tt); window.__tt = setTimeout(function(){ t.classList.remove('show'); }, 4000);
+}
+function setStage(stage, btn){
+  showTab('ops');
+  var s = document.getElementById('view-ops');
+  s.classList.remove('stage-all','stage-receiving','stage-picking','stage-shipping');
+  s.classList.add('stage-' + (stage==='inventory' ? 'all' : stage));
+  var seg = btn.parentNode;
+  seg.querySelectorAll('button').forEach(function(b){ b.classList.toggle('on', b===btn); });
+  if(stage==='inventory'){ showTab('inv'); }
+}
+function requestLaunch(btn){
+  var card = btn.closest('.card');
+  var name = card.querySelector('.c-name') ? card.querySelector('.c-name').textContent : 'заказу';
+  var t = document.getElementById('toast-ops');
+  t.querySelector('.toast-txt').textContent = 'Запрос на запуск сборки по «' + name + '» отправлен в офис — решение за менеджером/продавцом.';
+  t.classList.remove('show'); void t.offsetWidth; t.classList.add('show');
+  clearTimeout(window.__tl); window.__tl = setTimeout(function(){ t.classList.remove('show'); }, 4000);
+}
+</script>
+</body>
+</html>
