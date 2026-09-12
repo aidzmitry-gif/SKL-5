@@ -190,6 +190,8 @@ async def act_result(session, act):
 
 
 async def proved_chain(session, reservation, allocations, chains):
+    from modules.wms.invoice_remainder import RemainderRelease
+    from modules.wms.invoice_remainder import result as remainder_result
     acts = (await session.scalars(select(PhysicalShipmentAct).where(
         PhysicalShipmentAct.document_id == reservation.document_id).order_by(PhysicalShipmentAct.id)
         .execution_options(populate_existing=True))).all()
@@ -197,6 +199,13 @@ async def proved_chain(session, reservation, allocations, chains):
     for act in acts:
         result = await act_result(session, act)
         for row in result["snapshot"]["lines"]:
+            if row["after_id"] in links:
+                reject("physical_chain_duplicate")
+            links[row["after_id"]] = row
+    releases = (await session.scalars(select(RemainderRelease).where(
+        RemainderRelease.document_id == reservation.document_id))).all()
+    for receipt in releases:
+        for row in (await remainder_result(session, receipt))["snapshot"]["lines"]:
             if row["after_id"] in links:
                 reject("physical_chain_duplicate")
             links[row["after_id"]] = row
@@ -247,17 +256,24 @@ async def physical_basis(session, org, reservation, allocations):
 
 
 async def preview(session, org, source):
+    from modules.wms.invoice_remainder import RemainderRelease
+    from modules.wms.invoice_remainder import result as remainder_result
     reservation, allocations = await _locked_reservation(session, org, source)
     latest, *_, before = await _remaining(session, reservation, allocations)
     physical = await physical_basis(session, org, reservation, allocations)
     availability = await invoice_availability(session, org, sorted({row["sku_code"] for row in allocations}))
     balances = {(row["sku_code"], row["warehouse"]): row for row in availability["rows"]}
     versions = {row.source: row for row in latest}
+    receipt = await session.scalar(select(RemainderRelease).where(RemainderRelease.document_id == source["document_id"]))
+    released = set()
+    if receipt:
+        released = {row["source"] for row in (await remainder_result(session, receipt))["snapshot"]["lines"]}
     lines = []
     for allocation in sorted(allocations, key=lambda row: (row["line_no"], row["warehouse"])):
         balance = balances.get((allocation["sku_code"], allocation["warehouse"]), {})
         remaining = versions[allocation["source"]].qty
-        blocker = ("fully_shipped" if remaining == 0 else
+        blocker = ("remainder_released" if allocation["source"] in released else
+                   "fully_shipped" if remaining == 0 else
                    "physical_stock_unknown" if balance.get("physical") is None or balance.get("free") is None else
                    "physical_reserves_exceed_stock" if Decimal(balance["free"]) < 0 else None)
         lines.append({"line_no": allocation["line_no"], "sku_code": allocation["sku_code"],

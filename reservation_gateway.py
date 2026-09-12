@@ -10,6 +10,14 @@ from modules.wms.invoice_reservations import (
 
 
 class WmsReservationService:
+    async def invoice_remainder_preview(self, session, organization_id, source):
+        from modules.wms.invoice_remainder import preview
+        return await preview(session, organization_id, source)
+
+    async def release_invoice_remainder(self, session, organization_id, source, request, actor):
+        from modules.wms.invoice_remainder import release
+        return await release(session, organization_id, source, request, actor)
+
     async def production_receipt_status(self, session, organization_id, event_id, source):
         from decimal import Decimal
 

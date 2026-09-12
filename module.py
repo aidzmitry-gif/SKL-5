@@ -5,6 +5,7 @@ from core.runtime.contract import ModuleContract, Widget
 from core.runtime.core import Core
 from modules.wms import routes
 from modules.wms.events import on_goods_received, on_stock_released, on_stock_reserved
+from modules.wms.invoice_remainder import router as remainder_router
 from modules.wms.invoice_shipments import router as physical_router
 from modules.wms.permissions import PERMISSIONS, ROLES
 from modules.wms.primary_receipt_routes import router as primary_receipt_router
@@ -23,6 +24,7 @@ class WmsModule(ModuleContract):
         core.services.wms_reservations = WmsReservationService()
         core.include_router(routes.router, prefix=self.api_prefix)
         core.include_router(physical_router, prefix=self.api_prefix)
+        core.include_router(remainder_router, prefix=self.api_prefix)
         core.include_router(primary_receipt_router, prefix=self.api_prefix)
         # Резерв создаёт подбор; физическое движение требует отдельного подтверждения.
         core.subscribe("sales.stock.reserved", on_stock_reserved)
