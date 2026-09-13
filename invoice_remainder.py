@@ -150,9 +150,13 @@ async def basis(session, org, source):
 
 
 async def preview(session, org, source):
-    reservation, _, latest, _, evidence = await basis(session, org, source)
+    reservation, allocations, latest, _, evidence = await basis(session, org, source)
+    addresses = {row["source"]: row for row in allocations}
     return {"reservation_digest": reservation.digest, "basis_digest": _digest(evidence),
-            "remaining": [{"source": r.source, "qty": format(r.qty, ".2f")} for r in latest],
+            "remaining": [{"source": r.source, "qty": format(r.qty, ".2f"),
+                           "line_no": addresses[r.source]["line_no"],
+                           "sku_code": addresses[r.source]["sku_code"],
+                           "warehouse": addresses[r.source]["warehouse"]} for r in latest],
             "acts": evidence["acts"]}
 
 
