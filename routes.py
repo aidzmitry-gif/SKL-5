@@ -1,12 +1,14 @@
 """HTTP-API модуля WMS. Монтируется под префиксом ``/wms``."""
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import case, func, or_, select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.domain.models import Sku
@@ -26,6 +28,15 @@ from modules.wms.models import (
     Task,
     WarehouseOp,
 )
+from modules.wms.organization import (
+    ReceiptOrganizationInput,
+    authorize_row,
+    qc_revision,
+    visible_organization_ids,
+)
+from modules.wms.primary_receipts import PrimaryReceiptBinding, validate_primary_acceptance
+from modules.wms.production_arrivals import record_arrival
+from modules.wms.reservations import router as reservations_router
 from modules.wms.schemas import (
     AdjustmentIn,
     AlertRow,
@@ -43,6 +54,7 @@ from modules.wms.schemas import (
     InventoryLineCreate,
     InventoryLineOut,
     InventoryLineUpdate,
+    InventorySourceInput,
     InventorySummary,
     LocationCreate,
     LocationOut,
@@ -74,6 +86,19 @@ from modules.wms.schemas import (
 from modules.wms.stages import STAGES
 
 router = APIRouter(tags=["wms"])
+router.include_router(reservations_router)
+
+
+async def _validate_movement_locations(session: AsyncSession, warehouse: str, *location_ids: int | None) -> None:
+    ids = sorted({value for value in location_ids if value is not None})
+    if not ids:
+        return
+    locations = (await session.scalars(
+        select(Location).where(Location.id.in_(ids)).order_by(Location.id)
+        .with_for_update().execution_options(populate_existing=True)
+    )).all()
+    if len(locations) != len(ids) or any(not row.is_active or row.warehouse != warehouse for row in locations):
+        raise HTTPException(422, "Ячейка должна быть активной и принадлежать указанному складу")
 
 
 # --- Журнал движений (приход/расход; наполняется и событиями других модулей) ---
@@ -85,11 +110,14 @@ async def list_movements(
     warehouse: str | None = None,
     reason: str | None = None,
     limit: int = 200,
+    organization_id: int | None = Query(default=None, gt=0),
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.read")),
 ):
     """Движения по складу (приход/расход), новые первыми; опц. фильтры."""
-    stmt = select(StockMovement).order_by(StockMovement.id.desc())
+    visible = await visible_organization_ids(session, core, _, organization_id)
+    stmt = select(StockMovement).where(StockMovement.organization_id.in_(visible)).order_by(StockMovement.id.desc())
     if sku and sku.strip():
         stmt = stmt.where(StockMovement.sku_code.ilike(f"%{sku.strip()}%"))
     if warehouse:
@@ -104,10 +132,16 @@ async def list_movements(
 async def create_movement(
     payload: StockMovementCreate,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ):
     """Зафиксировать движение по складу (низкоуровневое; обычно — операции ниже)."""
+    await visible_organization_ids(session, core, _, payload.organization_id)
+    await _validate_movement_locations(session, payload.warehouse, payload.location_id)
+    from modules.wms.invoice_shipments import guard_free
+    await guard_free(session, payload.organization_id, {(payload.sku_code, payload.warehouse): Decimal(str(payload.qty)) if payload.kind == "out" else Decimal("0")}, [payload.doc_ref])
     obj = StockMovement(
+        organization_id=payload.organization_id,
         sku_code=payload.sku_code,
         warehouse=payload.warehouse,
         kind=payload.kind,
@@ -132,10 +166,14 @@ async def create_movement(
 async def receipt(
     payload: MovementOpIn,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ):
     """Приёмка: приходное движение (reason=receipt)."""
+    await visible_organization_ids(session, core, _, payload.organization_id)
+    await _validate_movement_locations(session, payload.warehouse, payload.location_id)
     obj = StockMovement(
+        organization_id=payload.organization_id,
         sku_code=payload.sku_code,
         warehouse=payload.warehouse,
         kind="in",
@@ -165,7 +203,12 @@ async def shipment(
     «Отгружено». Офис матчит документ по shipment_ref/sales_ref/doc_number — кладём ``doc_ref``
     во все три ключа. Без ``doc_ref`` событие НЕ эмитим: офис не сможет сопоставить документ.
     """
+    await visible_organization_ids(session, core, _, payload.organization_id)
+    await _validate_movement_locations(session, payload.warehouse, payload.location_id)
+    from modules.wms.invoice_shipments import guard_free
+    await guard_free(session, payload.organization_id, {(payload.sku_code, payload.warehouse): Decimal(str(payload.qty))}, [payload.doc_ref])
     obj = StockMovement(
+        organization_id=payload.organization_id,
         sku_code=payload.sku_code,
         warehouse=payload.warehouse,
         kind="out",
@@ -183,6 +226,7 @@ async def shipment(
             session,
             "wms.shipment.completed",
             {
+                "organization_id": payload.organization_id,
                 "shipment_ref": payload.doc_ref, "sales_ref": payload.doc_ref,
                 "doc_number": payload.doc_ref, "sku_code": payload.sku_code,
                 "warehouse": payload.warehouse, "qty": float(payload.qty),
@@ -198,20 +242,25 @@ async def shipment(
 async def transfer(
     payload: TransferIn,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ) -> list[StockMovement]:
     """Перемещение: пара движений out@from + in@to, связанных одним doc_ref (TRF-…)."""
+    await visible_organization_ids(session, core, _, payload.organization_id)
+    await _validate_movement_locations(session, payload.warehouse, payload.from_location_id, payload.to_location_id)
     qty = Decimal(str(payload.qty))
     if qty <= 0:
         raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
     if payload.from_location_id == payload.to_location_id:
         raise HTTPException(status_code=400, detail="Источник и назначение совпадают")
     out = StockMovement(
+        organization_id=payload.organization_id,
         sku_code=payload.sku_code, warehouse=payload.warehouse, kind="out", qty=qty,
         reason="transfer", location_id=payload.from_location_id,
         batch_ref=payload.batch_ref, note=payload.note,
     )
     inn = StockMovement(
+        organization_id=payload.organization_id,
         sku_code=payload.sku_code, warehouse=payload.warehouse, kind="in", qty=qty,
         reason="transfer", location_id=payload.to_location_id,
         batch_ref=payload.batch_ref, note=payload.note,
@@ -231,16 +280,22 @@ async def transfer(
 async def adjustment(
     payload: AdjustmentIn,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ):
     """Ручная коррекция остатка WMS: qty знаковая (+ излишек → in, − недостача → out).
 
     Правит только теневой журнал WMS — остатки 1С не меняются (1С = истина, фаза 1).
     """
+    await visible_organization_ids(session, core, _, payload.organization_id)
+    await _validate_movement_locations(session, payload.warehouse, payload.location_id)
     qty = Decimal(str(payload.qty))
     if qty == 0:
         raise HTTPException(status_code=400, detail="Коррекция на ноль не имеет смысла")
+    from modules.wms.invoice_shipments import guard_free
+    await guard_free(session, payload.organization_id, {(payload.sku_code, payload.warehouse): -qty})
     obj = StockMovement(
+        organization_id=payload.organization_id,
         sku_code=payload.sku_code,
         warehouse=payload.warehouse,
         kind="in" if qty > 0 else "out",
@@ -316,7 +371,9 @@ async def update_location(
 async def balances(
     sku: str | None = None,
     warehouse: str | None = None,
+    organization_id: int | None = Query(default=None, gt=0),
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.read")),
 ) -> BalancesOut:
     """Оперативный остаток WMS из движений: in − out по (SKU, склад, ячейка, партия).
@@ -324,6 +381,7 @@ async def balances(
     Это ТЕНЕВОЙ остаток (дубль движений), его положено сверять с 1С (истина остатка).
     Отрицательные значения = аномалия журнала (сигнал к разбору).
     """
+    visible = await visible_organization_ids(session, core, _, organization_id)
     signed = case((StockMovement.kind == "in", StockMovement.qty), else_=-StockMovement.qty)
     stmt = (
         select(
@@ -332,8 +390,11 @@ async def balances(
             StockMovement.location_id,
             StockMovement.batch_ref,
             func.coalesce(func.sum(signed), 0),
+            StockMovement.organization_id,
         )
+        .where(StockMovement.organization_id.in_(visible))
         .group_by(
+            StockMovement.organization_id,
             StockMovement.sku_code,
             StockMovement.warehouse,
             StockMovement.location_id,
@@ -362,6 +423,7 @@ async def balances(
     )
     out_rows = [
         BalanceRow(
+            organization_id=owner,
             sku_code=code,
             sku_title=titles.get(code, ""),
             warehouse=wh,
@@ -370,9 +432,9 @@ async def balances(
             batch_ref=batch or "",
             qty=float(qty),
         )
-        for code, wh, loc_id, batch, qty in rows
+        for code, wh, loc_id, batch, qty, owner in rows
     ]
-    out_rows.sort(key=lambda r: (r.sku_code, r.location_code, r.batch_ref))
+    out_rows.sort(key=lambda r: (r.organization_id, r.sku_code, r.warehouse, r.location_code, r.batch_ref))
     return BalancesOut(rows=out_rows, sku_count=len({r.sku_code for r in out_rows}))
 
 
@@ -671,12 +733,13 @@ def _summary(outs: list[InventoryLineOut]) -> InventorySummary:
     counted = [o for o in outs if o.counted_qty is not None]
     shortages = [o for o in counted if o.variance is not None and o.variance < 0]
     surpluses = [o for o in counted if o.variance is not None and o.variance > 0]
-    shortage_value = round(
-        sum(o.variance_value for o in shortages if o.variance_value is not None), 2
-    )
-    surplus_value = round(
-        sum(o.variance_value for o in surpluses if o.variance_value is not None), 2
-    )
+    def valued_total(rows):
+        if not outs or any(row.unit_cost is None for row in outs) or any(row.variance_value is None for row in rows):
+            return None
+        return round(sum(row.variance_value for row in rows), 2)
+
+    shortage_value = valued_total(shortages)
+    surplus_value = valued_total(surpluses)
     return InventorySummary(
         lines=len(outs),
         counted=len(counted),
@@ -684,7 +747,8 @@ def _summary(outs: list[InventoryLineOut]) -> InventorySummary:
         surpluses=len(surpluses),
         shortage_value=shortage_value,
         surplus_value=surplus_value,
-        net_value=round(shortage_value + surplus_value, 2),
+        net_value=(round(shortage_value + surplus_value, 2)
+                   if shortage_value is not None and surplus_value is not None else None),
     )
 
 
@@ -698,6 +762,14 @@ async def _inventory_detail(session: AsyncSession, doc: InventoryCount) -> Inven
     ).scalars().all()
     outs = [_line_out(line) for line in lines]
     return InventoryDetailOut(
+        expected_source=doc.expected_source,
+        source_evidence=doc.source_evidence,
+        journal_confirmed_by=doc.journal_confirmed_by,
+        journal_confirmed_at=doc.journal_confirmed_at,
+        snapshot_version=doc.snapshot_version,
+        snapshot_cutoff=doc.snapshot_cutoff,
+        snapshot_at=doc.snapshot_at,
+        organization_id=doc.organization_id,
         id=doc.id,
         number=doc.number,
         warehouse=doc.warehouse,
@@ -710,13 +782,31 @@ async def _inventory_detail(session: AsyncSession, doc: InventoryCount) -> Inven
     )
 
 
-async def _open_count(session: AsyncSession, count_id: int) -> InventoryCount:
-    """Документ инвентаризации, проверенный на существование и статус ``open``."""
-    doc = await session.get(InventoryCount, count_id)
-    if doc is None:
-        raise HTTPException(status_code=404, detail="Инвентаризация не найдена")
+def _inventory_access_gateway(core, *, listing=False):
+    gateway = getattr(core.services, "accounting", None)
+    methods = ["source_member"] + (["source_organizations"] if listing else [])
+    if gateway is None or any(not callable(getattr(gateway, name, None)) for name in methods):
+        raise HTTPException(503, "Сервис доступа к юрлицам недоступен")
+    return gateway
+
+
+async def _inventory_visible(session, core, user, organization_id=None):
+    _inventory_access_gateway(core, listing=organization_id is None)
+    return await visible_organization_ids(session, core, user, organization_id)
+
+
+async def _owned_inventory_row(session, core, user, model, row_id):
+    row = await session.get(model, row_id)
+    if row is None:
+        raise HTTPException(404, "Складской документ не найден")
+    _inventory_access_gateway(core)
+    return await authorize_row(session, core, user, row)
+
+
+async def _open_count(session: AsyncSession, count_id: int, core: Core, user) -> InventoryCount:
+    doc = await _owned_inventory_row(session, core, user, InventoryCount, count_id)
     if doc.status != "open":
-        raise HTTPException(status_code=409, detail="Инвентаризация уже проведена или отменена")
+        raise HTTPException(409, "Инвентаризация уже проведена или отменена")
     return doc
 
 
@@ -737,42 +827,97 @@ async def _snapshot_from_1c(
     return Decimal(str(row["qty_available"])), cost
 
 
-async def _fill_inventory_from_1c(session: AsyncSession, core: Core, doc: InventoryCount) -> None:
-    """Заполнить документ инвентаризации строками ожидаемого из 1С (по складу документа).
+# Only physical movements participate. Legacy reservation mirrors are never stock.
+_INVENTORY_PHYSICAL_REASONS = {"", "receipt", "shipment", "transfer", "adjustment", "pick", "pack"}
 
-    Уже добавленные SKU пропускаются (идемпотентно). Без commit — фиксирует вызывающий.
-    # ponytail: N+1 по шлюзу; bulk-чтение остатков на StockGateway — согласовать с СИНК.
-    """
-    existing = set(
-        (
-            await session.execute(
-                select(InventoryLine.sku_code).where(InventoryLine.count_id == doc.id)
-            )
-        ).scalars().all()
-    )
-    skus = (await session.execute(select(Sku).order_by(Sku.code))).scalars().all()
-    for sku in skus:
-        if sku.code in existing:
+
+async def _inventory_confirmation(session, core, user, organization_id, payload):
+    if not payload.journal_complete:
+        raise HTTPException(422, "Подтвердите полноту физического журнала и основание пересчёта")
+    actor = await _inventory_access_gateway(core).source_member(session, organization_id, user)
+    return {"expected_source": payload.expected_source, "source_evidence": payload.source_evidence,
+            "journal_confirmed_by": actor, "journal_confirmed_at": datetime.utcnow()}
+
+
+def _confirmed_inventory_source(doc):
+    if (doc.expected_source != "wms_physical" or not doc.source_evidence
+            or not doc.journal_confirmed_by or doc.journal_confirmed_at is None):
+        raise HTTPException(409, "Источник и полнота журнала не подтверждены. Создайте новый пересчёт")
+
+
+async def _physical_inventory_snapshot(session, organization_id, warehouse):
+    # Caller holds the same organization lock as manual movements, acceptance and task writers.
+    rows = (await session.scalars(select(StockMovement).where(
+        StockMovement.organization_id == organization_id, StockMovement.warehouse == warehouse,
+        StockMovement.reason.not_in(["reserve", "release"]),
+    ).order_by(StockMovement.id).execution_options(populate_existing=True))).all()
+    if not rows:
+        raise HTTPException(409, "Ожидаемый остаток неизвестен: нет подтверждённых физических движений")
+    quantities = {}
+    identity = []
+    for row in rows:
+        if (row.reason not in _INVENTORY_PHYSICAL_REASONS or row.kind not in {"in", "out"}
+                or not row.sku_code or not row.qty.is_finite() or row.qty <= 0):
+            raise HTTPException(409, "Журнал содержит неразобранное движение. Требуется сверка")
+        quantities[row.sku_code] = quantities.get(row.sku_code, Decimal("0")) + (row.qty if row.kind == "in" else -row.qty)
+        identity.append([row.id, row.sku_code, row.kind, format(row.qty, ".2f"), row.reason])
+    if any(qty < 0 or qty >= Decimal("1000000000000") for qty in quantities.values()):
+        raise HTTPException(409, "Физический остаток требует сверки перед пересчётом")
+    serialized = json.dumps([organization_id, warehouse, identity], ensure_ascii=False, separators=(",", ":"))
+    return quantities, hashlib.sha256(serialized.encode()).hexdigest(), rows[-1].id
+
+
+def _check_inventory_version(doc, version, cutoff):
+    if doc.snapshot_version != version or doc.snapshot_cutoff != cutoff:
+        raise HTTPException(409, "Физический журнал изменился. Создайте новый пересчёт")
+
+
+async def _inventory_snapshot(session, doc):
+    _confirmed_inventory_source(doc)
+    try:
+        quantities, version, cutoff = await _physical_inventory_snapshot(session, doc.organization_id, doc.warehouse)
+    except HTTPException as exc:
+        if exc.status_code == 409 and doc.snapshot_version is not None:
+            raise HTTPException(409, "Физический журнал изменился. Создайте новый пересчёт") from exc
+        raise
+    if doc.snapshot_version is not None:
+        _check_inventory_version(doc, version, cutoff)
+    return quantities, version, cutoff
+
+
+def _record_inventory_snapshot(doc, version, cutoff):
+    if doc.snapshot_version is None:
+        doc.snapshot_version = version
+        doc.snapshot_cutoff = cutoff
+        doc.snapshot_at = datetime.utcnow()
+
+
+async def _fill_inventory_from_physical(session, doc):
+    quantities, version, cutoff = await _inventory_snapshot(session, doc)
+    existing = set((await session.scalars(select(InventoryLine.sku_code).where(
+        InventoryLine.count_id == doc.id))).all())
+    skus = {row.code: row for row in (await session.scalars(select(Sku).where(Sku.code.in_(quantities)))).all()}
+    for code, qty in sorted(quantities.items()):
+        if code in existing:
             continue
-        expected, cost = await _snapshot_from_1c(core, session, sku.code, doc.warehouse)
-        if expected == 0:
-            continue  # нет остатка по складу — в документ «по SKU с остатком» не тянем
-        session.add(
-            InventoryLine(
-                count_id=doc.id, sku_code=sku.code, sku_title=sku.title, unit=sku.unit,
-                expected_qty=expected, unit_cost=cost,
-            )
-        )
+        sku = skus.get(code)
+        session.add(InventoryLine(count_id=doc.id, sku_code=code,
+            sku_title=sku.title if sku else "", unit=sku.unit if sku else "шт",
+            expected_qty=qty, unit_cost=None))
+    _record_inventory_snapshot(doc, version, cutoff)
 
 
 @router.get("/inventory", response_model=list[InventoryCountOut])
 async def list_inventory(
     status: str | None = None,
+    organization_id: int | None = Query(default=None, gt=0),
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.read")),
 ):
     """Список документов инвентаризации (DESC по id), опц. фильтр по статусу."""
-    stmt = select(InventoryCount).order_by(InventoryCount.id.desc())
+    visible = await _inventory_visible(session, core, _, organization_id)
+    stmt = select(InventoryCount).where(InventoryCount.organization_id.in_(visible)).order_by(InventoryCount.id.desc())
     if status:
         stmt = stmt.where(InventoryCount.status == status)
     return (await session.execute(stmt)).scalars().all()
@@ -782,10 +927,13 @@ async def list_inventory(
 async def create_inventory(
     payload: InventoryCountCreate,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ):
     """Создать документ инвентаризации. Номер генерируется (`ИНВ-2026-{id:04d}`)."""
-    doc = InventoryCount(warehouse=payload.warehouse, note=payload.note)
+    confirmation = await _inventory_confirmation(session, core, _, payload.organization_id, payload)
+    doc = InventoryCount(organization_id=payload.organization_id, warehouse=payload.warehouse,
+                         note=payload.note, **confirmation)
     session.add(doc)
     await session.flush()
     if not doc.number:
@@ -799,12 +947,11 @@ async def create_inventory(
 async def get_inventory(
     count_id: int,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.read")),
 ) -> InventoryDetailOut:
     """Документ инвентаризации со строками, расхождениями и денежной сводкой."""
-    doc = await session.get(InventoryCount, count_id)
-    if doc is None:
-        raise HTTPException(status_code=404, detail="Инвентаризация не найдена")
+    doc = await _owned_inventory_row(session, core, _, InventoryCount, count_id)
     return await _inventory_detail(session, doc)
 
 
@@ -815,17 +962,9 @@ async def populate_inventory(
     core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ) -> InventoryDetailOut:
-    """Заполнить документ ожидаемыми остатками склада из 1С (по всем SKU с остатком).
-
-    Снимок ожидаемого/себеса фиксируется в строках; факт вносит кладовщик далее. Уже
-    добавленные SKU пропускаются (повторный вызов не плодит дубли).
-    # ponytail: N+1 по шлюзу; bulk-чтение остатков на StockGateway — когда номенклатура
-    # вырастет, согласовать с СИНК (владелец integrations).
-    """
-    doc = await _open_count(session, count_id)
-    if core.services.stock is None:
-        raise HTTPException(status_code=503, detail="Шлюз остатков (1С/integrations) не подключён")
-    await _fill_inventory_from_1c(session, core, doc)
+    """Зафиксировать подтверждённый физический журнал юрлица; повтор не обновляет снимок."""
+    doc = await _open_count(session, count_id, core, _)
+    await _fill_inventory_from_physical(session, doc)
     await session.commit()
     return await _inventory_detail(session, doc)
 
@@ -838,12 +977,19 @@ async def add_inventory_line(
     core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ) -> InventoryLineOut:
-    """Добавить строку вручную (напр. найден товар, которого нет в 1С → ожидаемое 0)."""
-    doc = await _open_count(session, count_id)
+    """Добавить SKU с известным физическим остатком выбранного юрлица; неизвестное не ноль."""
+    doc = await _open_count(session, count_id, core, _)
     sku = (
         await session.execute(select(Sku).where(Sku.code == payload.sku_code))
     ).scalars().first()
-    expected, cost = await _snapshot_from_1c(core, session, payload.sku_code, doc.warehouse)
+    quantities, version, cutoff = await _inventory_snapshot(session, doc)
+    if payload.sku_code not in quantities:
+        raise HTTPException(409, "Ожидаемый остаток SKU неизвестен. Требуется подтверждённый источник")
+    if await session.scalar(select(InventoryLine.id).where(
+            InventoryLine.count_id == count_id, InventoryLine.sku_code == payload.sku_code)):
+        raise HTTPException(409, "SKU уже включён в пересчёт")
+    expected, cost = quantities[payload.sku_code], None
+    _record_inventory_snapshot(doc, version, cutoff)
     line = InventoryLine(
         count_id=count_id,
         sku_code=payload.sku_code,
@@ -864,13 +1010,14 @@ async def update_inventory_line(
     line_id: int,
     payload: InventoryLineUpdate,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ) -> InventoryLineOut:
     """Внести факт пересчёта / заметку по строке. Документ должен быть открыт."""
     line = await session.get(InventoryLine, line_id)
     if line is None:
         raise HTTPException(status_code=404, detail="Строка инвентаризации не найдена")
-    await _open_count(session, line.count_id)  # 409, если документ уже проведён
+    await _open_count(session, line.count_id, core, _)  # 409, если документ уже проведён
     if payload.counted_qty is not None:
         line.counted_qty = Decimal(str(payload.counted_qty))
     if payload.note is not None:
@@ -884,22 +1031,47 @@ async def update_inventory_line(
 async def complete_inventory(
     count_id: int,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ):
-    """Провести (заморозить) инвентаризацию: статус ``done`` + коррекция теневого журнала.
+    """Зафиксировать пересчёт и корректировки физического журнала юрлица атомарно.
 
-    Для каждой посчитанной строки с расхождением пишется движение ``adjustment`` в
-    ОПЕРАЦИОННЫЙ журнал WMS (in — излишек, out — недостача), чтобы теневой остаток склада
-    сошёлся с фактом пересчёта.
-    ⚠️ Остатки 1С НЕ корректируются — это решение владельца (фаза 2). 1С остаётся истиной;
-    документ лишь фиксирует расхождения как факт и правит СВОЙ журнал.
+    Требуется актуальный подтверждённый снимок. Бухгалтерская оценка расхождений
+    и проводки оформляются отдельным документом на подтверждённых основаниях.
     """
-    doc = await _open_count(session, count_id)
+    doc = await _owned_inventory_row(session, core, _, InventoryCount, count_id)
+    if doc.status == "done":
+        return doc
+    if doc.status != "open":
+        raise HTTPException(409, "Инвентаризация отменена")
     lines = (
         await session.execute(
             select(InventoryLine).where(InventoryLine.count_id == count_id)
+            .execution_options(populate_existing=True)
         )
     ).scalars().all()
+    if not lines or any(line.counted_qty is None for line in lines):
+        raise HTTPException(409, "Пересчёт всех строк должен быть завершён")
+    quantities, version, cutoff = await _inventory_snapshot(session, doc)
+    if doc.snapshot_version is None:
+        raise HTTPException(409, "Снимок исходного журнала не зафиксирован. Создайте новый пересчёт")
+    if len({line.sku_code for line in lines}) != len(lines) or any(
+            line.sku_code not in quantities or line.expected_qty != quantities[line.sku_code]
+            for line in lines):
+        raise HTTPException(409, "Строки не соответствуют снимку журнала. Создайте новый пересчёт")
+    # Confirmed counts record physical fact even when existing reservations exceed it.
+    # Fulfillment and discretionary stock issues still enforce available stock.
+    # Conditional claim protects repeated deliveries, including SQLite where FOR UPDATE is ignored.
+    claimed = await session.scalar(update(InventoryCount).where(
+        InventoryCount.id == count_id, InventoryCount.organization_id == doc.organization_id,
+        InventoryCount.status == "open",
+    ).values(status="done", completed_at=datetime.utcnow()).returning(InventoryCount.id)
+      .execution_options(synchronize_session=False))
+    if claimed is None:
+        await session.refresh(doc)
+        if doc.status == "done":
+            return doc
+        raise HTTPException(409, "Состояние инвентаризации изменилось")
     for line in lines:
         if line.counted_qty is None:
             continue
@@ -908,6 +1080,7 @@ async def complete_inventory(
             continue
         session.add(
             StockMovement(
+                organization_id=doc.organization_id,
                 sku_code=line.sku_code,
                 warehouse=doc.warehouse,
                 kind="in" if variance > 0 else "out",
@@ -918,9 +1091,11 @@ async def complete_inventory(
                 note="инвентаризация",
             )
         )
-    doc.status = "done"
-    doc.completed_at = datetime.utcnow()
-    await session.commit()
+    try:
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
     await session.refresh(doc)
     return doc
 
@@ -937,10 +1112,12 @@ async def _sku_title(session: AsyncSession, code: str) -> str:
 async def _receipt_detail(session: AsyncSession, r: Receipt) -> ReceiptDetailOut:
     lines = (
         await session.execute(
-            select(ReceiptLine).where(ReceiptLine.receipt_id == r.id).order_by(ReceiptLine.id)
+            select(ReceiptLine).where(ReceiptLine.receipt_id == r.id).order_by(ReceiptLine.id).execution_options(populate_existing=True)
         )
     ).scalars().all()
     return ReceiptDetailOut(
+        qc_revision=qc_revision(r, lines),
+        organization_id=r.organization_id,
         id=r.id, number=r.number, source=r.source, entity_ref=r.entity_ref,
         warehouse=r.warehouse, status=r.status, counterparty=r.counterparty,
         created_at=r.created_at, decided_at=r.decided_at, decided_by=r.decided_by,
@@ -952,11 +1129,14 @@ async def _receipt_detail(session: AsyncSession, r: Receipt) -> ReceiptDetailOut
 async def list_receipts(
     status: str | None = None,
     warehouse: str | None = None,
+    organization_id: int | None = None,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.read")),
 ):
-    """Документы приёмки (DESC по id); опц. фильтр по статусу/складу."""
-    stmt = select(Receipt).order_by(Receipt.id.desc())
+    """Приёмки доступных юрлиц; несопоставленные документы не входят в рабочий список."""
+    organization_ids = await visible_organization_ids(session, core, _, organization_id)
+    stmt = select(Receipt).where(Receipt.organization_id.in_(organization_ids)).order_by(Receipt.id.desc())
     if status:
         stmt = stmt.where(Receipt.status == status)
     if warehouse:
@@ -964,16 +1144,70 @@ async def list_receipts(
     return (await session.execute(stmt)).scalars().all()
 
 
+@router.get("/receipt-organizations")
+async def receipt_organizations(
+    session: AsyncSession = Depends(get_session), core: Core = Depends(get_core),
+    user: object = Depends(require_permission("wms.read")),
+):
+    gateway = getattr(core.services, "accounting", None)
+    if gateway is None:
+        raise HTTPException(503, "Сервис доступа к юрлицам недоступен")
+    return await gateway.source_organizations(session, user)
+
+
+@router.get("/receipts-unassigned")
+async def unassigned_receipts(
+    organization_id: int = Query(gt=0),
+    after_id: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
+    user: object = Depends(require_permission("wms.read")),
+):
+    """Кандидаты для явного сопоставления главбухом; чтение не назначает владельца."""
+    gateway = getattr(core.services, "accounting", None)
+    if gateway is None:
+        raise HTTPException(503, "Сервис доступа к юрлицам недоступен")
+    await gateway.source_owner_authority(session, organization_id, user)
+    rows = (await session.scalars(select(Receipt).where(
+        Receipt.organization_id.is_(None), Receipt.status == "pending_qc", Receipt.id > after_id,
+    ).order_by(Receipt.id).limit(51))).all()
+    items = rows[:50]
+    return {"items": [ReceiptOut.model_validate(row) for row in items],
+            "next_after_id": items[-1].id if len(rows) > 50 else None}
+
+
+@router.get("/receipts-unassigned/{receipt_id}", response_model=ReceiptDetailOut)
+async def unassigned_receipt_detail(
+    receipt_id: int,
+    organization_id: int = Query(gt=0),
+    session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
+    user: object = Depends(require_permission("wms.read")),
+):
+    gateway = getattr(core.services, "accounting", None)
+    if gateway is None:
+        raise HTTPException(503, "Сервис доступа к юрлицам недоступен")
+    await gateway.source_owner_authority(session, organization_id, user)
+    receipt = await session.scalar(select(Receipt).where(
+        Receipt.id == receipt_id, Receipt.organization_id.is_(None), Receipt.status == "pending_qc",
+    ).with_for_update().execution_options(populate_existing=True))
+    if receipt is None:
+        raise HTTPException(404, "Приёмка не найдена в очереди сопоставления")
+    return await _receipt_detail(session, receipt)
+
+
 @router.get("/receipts/{receipt_id}", response_model=ReceiptDetailOut)
 async def get_receipt(
     receipt_id: int,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.read")),
 ) -> ReceiptDetailOut:
     """Документ приёмки со строками."""
     r = await session.get(Receipt, receipt_id)
     if r is None:
         raise HTTPException(status_code=404, detail="Приёмка не найдена")
+    r = await authorize_row(session, core, _, r)
     return await _receipt_detail(session, r)
 
 
@@ -981,10 +1215,13 @@ async def get_receipt(
 async def create_receipt(
     payload: ReceiptCreate,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ) -> ReceiptDetailOut:
     """Ручная приёмка: документ в pending_qc + строки. Приход — после QC accept (D2)."""
+    await visible_organization_ids(session, core, _, payload.organization_id)
     r = Receipt(
+        organization_id=payload.organization_id,
         source=payload.source or "manual",
         entity_ref=payload.entity_ref,
         warehouse=payload.warehouse,
@@ -1010,10 +1247,40 @@ async def create_receipt(
     return await _receipt_detail(session, r)
 
 
+@router.post("/receipts/{receipt_id}/organization", response_model=ReceiptDetailOut)
+async def assign_receipt_organization(
+    receipt_id: int, payload: ReceiptOrganizationInput, core: Core = Depends(get_core),
+    session: AsyncSession = Depends(get_session),
+    user: object = Depends(require_permission("wms.count")),
+):
+    gateway = getattr(core.services, "accounting", None)
+    if gateway is None:
+        raise HTTPException(503, "Сервис доступа к юрлицам недоступен")
+    actor = await gateway.source_owner_authority(session, payload.organization_id, user)
+    receipt = await session.scalar(select(Receipt).where(Receipt.id == receipt_id).with_for_update())
+    if receipt is None:
+        raise HTTPException(404, "Приёмка не найдена")
+    if receipt.organization_id is not None:
+        if receipt.organization_id != payload.organization_id:
+            raise HTTPException(409, "Юрлицо уже подтверждено; требуется отдельное исправление")
+        return await _receipt_detail(session, receipt)
+    if receipt.status != "pending_qc":
+        raise HTTPException(409, "Сопоставление принятой приёмки требует сверки существующих движений")
+    receipt.organization_id = payload.organization_id
+    core.event_bus.emit(session, "wms.receipt.organization_assigned", {
+        "receipt_id": receipt.id, "organization_id": payload.organization_id,
+        "actor": actor, "evidence": payload.evidence,
+    })
+    await session.commit()
+    await session.refresh(receipt)
+    return await _receipt_detail(session, receipt)
+
+
 @router.post("/receipts/{receipt_id}/qc", response_model=ReceiptDetailOut)
 async def qc_receipt(
     receipt_id: int,
     payload: QcDecisionIn,
+    core: Core = Depends(get_core),
     session: AsyncSession = Depends(get_session),
     _: object = Depends(require_permission("wms.count")),
 ) -> ReceiptDetailOut:
@@ -1022,20 +1289,25 @@ async def qc_receipt(
     r = await session.get(Receipt, receipt_id)
     if r is None:
         raise HTTPException(status_code=404, detail="Приёмка не найдена")
+    r = await authorize_row(session, core, _, r)
     if r.status != "pending_qc":
         raise HTTPException(status_code=409, detail="Приёмка уже обработана")
     lines = {
         line.id: line
         for line in (
             await session.execute(
-                select(ReceiptLine).where(ReceiptLine.receipt_id == receipt_id)
+                select(ReceiptLine).where(ReceiptLine.receipt_id == receipt_id).execution_options(populate_existing=True)
             )
         ).scalars().all()
     }
+    if payload.expected_revision != qc_revision(r, lines.values()):
+        raise HTTPException(409, "Результаты контроля изменились. Обновите документ и проверьте ввод заново")
+    decision_ids = [d.line_id for d in payload.decisions]
+    if len(decision_ids) != len(set(decision_ids)) or any(line_id not in lines for line_id in decision_ids):
+        raise HTTPException(422, "Строки контроля качества должны принадлежать приёмке и не повторяться")
+    await _validate_movement_locations(session, r.warehouse, *(d.location_id for d in payload.decisions))
     for d in payload.decisions:
         line = lines.get(d.line_id)
-        if line is None:
-            continue  # чужая/несуществующая строка — пропускаем
         line.accepted_qty = Decimal(str(d.accepted_qty))
         line.rejected_qty = Decimal(str(d.rejected_qty))
         line.reject_reason = d.reject_reason
@@ -1051,6 +1323,7 @@ async def qc_receipt(
 @router.post("/receipts/{receipt_id}/accept", response_model=ReceiptDetailOut)
 async def accept_receipt(
     receipt_id: int,
+    core: Core = Depends(get_core),
     session: AsyncSession = Depends(get_session),
     _: object = Depends(require_permission("wms.count")),
 ) -> ReceiptDetailOut:
@@ -1064,20 +1337,27 @@ async def accept_receipt(
     r = await session.get(Receipt, receipt_id)
     if r is None:
         raise HTTPException(status_code=404, detail="Приёмка не найдена")
+    r = await authorize_row(session, core, _, r)
     if r.status != "pending_qc":
         if r.status == "accepted":
             return await _receipt_detail(session, r)  # идемпотентно
         raise HTTPException(status_code=409, detail=f"Нельзя провести приёмку в статусе {r.status}")
     lines = (
         await session.execute(
-            select(ReceiptLine).where(ReceiptLine.receipt_id == receipt_id)
+            select(ReceiptLine).where(ReceiptLine.receipt_id == receipt_id).execution_options(populate_existing=True)
         )
     ).scalars().all()
+    await validate_primary_acceptance(session, core, r, lines)
+    await _validate_movement_locations(session, r.warehouse, *(
+        line.location_id for line in lines
+        if (line.accepted_qty if line.accepted_qty is not None else line.expected_qty) > 0
+    ))
     for line in lines:
         accepted = line.accepted_qty if line.accepted_qty is not None else line.expected_qty
         if accepted and accepted > 0:
             session.add(
                 StockMovement(
+                    organization_id=r.organization_id,
                     sku_code=line.sku_code,
                     warehouse=r.warehouse,
                     kind="in",
@@ -1092,6 +1372,7 @@ async def accept_receipt(
             session.add(
                 Task(
                     kind="putaway",
+                    organization_id=r.organization_id,
                     sku_code=line.sku_code,
                     qty=accepted,
                     warehouse=r.warehouse,
@@ -1102,6 +1383,34 @@ async def accept_receipt(
             )
     r.status = "accepted"
     r.decided_at = datetime.utcnow()
+    await record_arrival(session, r, lines)
+    binding = await session.get(PrimaryReceiptBinding, r.id)
+    if binding is not None and getattr(core, "event_bus", None) is not None:
+        binding_lines = {item["receipt_line_id"]: item for item in binding.line_bindings}
+        accepted_lines = []
+        for line in lines:
+            source = binding_lines.get(line.id)
+            if source is None:
+                raise HTTPException(409, "Связь первичной и физической приёмки неполна")
+            accepted = line.accepted_qty if line.accepted_qty is not None else line.expected_qty
+            accepted_lines.append({
+                "position": source["position"],
+                "source_line": source["source_line"],
+                "sku_code": line.sku_code,
+                "accepted_qty": format(accepted, ".2f"),
+            })
+        core.event_bus.emit(session, "wms.receipt.accepted", {
+            "schema_version": 1,
+            "organization_id": binding.organization_id,
+            "receipt_id": r.id,
+            "source_receipt_id": binding.source_receipt_id,
+            "source_version": binding.source_version,
+            "warehouse": r.warehouse,
+            "lines": sorted(accepted_lines, key=lambda item: item["position"]),
+            "evidence": f"QC accepted {r.number}",
+            "by": r.decided_by or "wms",
+            "entity_ref": f"procurement:receipt:{binding.source_receipt_id}",
+        })
     await session.commit()
     await session.refresh(r)
     return await _receipt_detail(session, r)
@@ -1115,11 +1424,14 @@ async def list_tasks(
     kind: str | None = None,
     status: str | None = None,
     assignee: str | None = None,
+    organization_id: int | None = None,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.read")),
 ):
     """Задачи склада (DESC по id); фильтры kind/status/assignee."""
-    stmt = select(Task).order_by(Task.id.desc())
+    organization_ids = await visible_organization_ids(session, core, _, organization_id)
+    stmt = select(Task).where(Task.organization_id.in_(organization_ids)).order_by(Task.id.desc())
     if kind:
         stmt = stmt.where(Task.kind == kind)
     if status:
@@ -1133,9 +1445,12 @@ async def list_tasks(
 async def create_task(
     payload: TaskCreate,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ):
     """Создать задачу (put-away/pick) вручную."""
+    await visible_organization_ids(session, core, _, payload.organization_id)
+    await _validate_movement_locations(session, payload.warehouse, payload.from_location_id, payload.to_location_id)
     t = Task(**payload.model_dump())
     session.add(t)
     await session.commit()
@@ -1147,6 +1462,7 @@ async def create_task(
 async def update_task(
     task_id: int,
     payload: TaskUpdate,
+    core: Core = Depends(get_core),
     session: AsyncSession = Depends(get_session),
     _: object = Depends(require_permission("wms.count")),
 ):
@@ -1155,8 +1471,17 @@ async def update_task(
     t = await session.get(Task, task_id)
     if t is None:
         raise HTTPException(status_code=404, detail="Задача не найдена")
+    t = await authorize_row(session, core, _, t)
+    from modules.wms.invoice_shipments import guard_free
+    from modules.wms.reservation_events import ReservationPick
+    if t.kind == "pick" and await session.get(ReservationPick, t.id) is not None:
+        if payload.status not in (None, "in_progress") or payload.to_location_id is not None:
+            raise HTTPException(409, "Invoice-owned picks allow assignment, instructions and in_progress only")
     if t.status in ("done", "canceled"):
         raise HTTPException(status_code=409, detail="Задача уже закрыта")
+    if payload.to_location_id is not None or payload.status == "done":
+        destination = payload.to_location_id if payload.to_location_id is not None else t.to_location_id
+        await _validate_movement_locations(session, t.warehouse, t.from_location_id, destination)
     if payload.assignee is not None:
         t.assignee = payload.assignee
     if payload.to_location_id is not None:
@@ -1173,14 +1498,15 @@ async def update_task(
                 raise HTTPException(status_code=400, detail="Укажите ячейку назначения (to_location_id)")
             ref = f"PUT-{t.id:05d}"
             session.add_all([
-                StockMovement(sku_code=t.sku_code, warehouse=t.warehouse, kind="out", qty=t.qty,
+                StockMovement(organization_id=t.organization_id, sku_code=t.sku_code, warehouse=t.warehouse, kind="out", qty=t.qty,
                               reason="transfer", location_id=t.from_location_id, doc_ref=ref),
-                StockMovement(sku_code=t.sku_code, warehouse=t.warehouse, kind="in", qty=t.qty,
+                StockMovement(organization_id=t.organization_id, sku_code=t.sku_code, warehouse=t.warehouse, kind="in", qty=t.qty,
                               reason="transfer", location_id=t.to_location_id, doc_ref=ref),
             ])
         elif t.kind == "pick":
+            await guard_free(session, t.organization_id, {(t.sku_code, t.warehouse): t.qty}, [t.doc_ref])
             session.add(
-                StockMovement(sku_code=t.sku_code, warehouse=t.warehouse, kind="out", qty=t.qty,
+                StockMovement(organization_id=t.organization_id, sku_code=t.sku_code, warehouse=t.warehouse, kind="out", qty=t.qty,
                               reason="pick", location_id=t.from_location_id,
                               doc_ref=t.doc_ref or f"PICK-{t.id:05d}")
             )
@@ -1195,6 +1521,7 @@ async def update_task(
 async def pack(
     payload: MovementOpIn,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ) -> list[StockMovement]:
     """Упаковка подобранного: balance-нейтральная пара движений reason=pack (перевод в зону
@@ -1203,15 +1530,19 @@ async def pack(
     Нейтральна для оперативного остатка (out из подбора + in в упаковку) — физический расход
     даёт отгрузка (/shipment reason=shipment).
     """
+    await visible_organization_ids(session, core, _, payload.organization_id)
+    await _validate_movement_locations(session, payload.warehouse, payload.location_id)
     qty = Decimal(str(payload.qty))
     if qty <= 0:
         raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
     ref = payload.doc_ref or ""
     out = StockMovement(
+        organization_id=payload.organization_id,
         sku_code=payload.sku_code, warehouse=payload.warehouse, kind="out", qty=qty,
         reason="pack", batch_ref=payload.batch_ref, doc_ref=ref, note=payload.note,
     )
     inn = StockMovement(
+        organization_id=payload.organization_id,
         sku_code=payload.sku_code, warehouse=payload.warehouse, kind="in", qty=qty,
         reason="pack", location_id=payload.location_id, batch_ref=payload.batch_ref,
         doc_ref=ref, note=payload.note,
@@ -1455,12 +1786,15 @@ async def emit_alerts(
 
 @router.get("/cycle-plans", response_model=list[CyclePlanOut])
 async def list_cycle_plans(
+    organization_id: int | None = Query(default=None, gt=0),
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.read")),
 ):
     """Планы циклического пересчёта (по дате срока, раньше — выше)."""
+    visible = await _inventory_visible(session, core, _, organization_id)
     return (
-        await session.execute(select(CycleCountPlan).order_by(CycleCountPlan.next_due_date))
+        await session.execute(select(CycleCountPlan).where(CycleCountPlan.organization_id.in_(visible)).order_by(CycleCountPlan.next_due_date))
     ).scalars().all()
 
 
@@ -1468,10 +1802,13 @@ async def list_cycle_plans(
 async def create_cycle_plan(
     payload: CyclePlanCreate,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ):
     """Создать план цикл-каунта."""
-    plan = CycleCountPlan(**payload.model_dump())
+    confirmation = await _inventory_confirmation(session, core, _, payload.organization_id, payload)
+    data = payload.model_dump(exclude={"expected_source", "source_evidence", "journal_complete"})
+    plan = CycleCountPlan(**data, **confirmation)
     session.add(plan)
     await session.commit()
     await session.refresh(plan)
@@ -1483,12 +1820,11 @@ async def update_cycle_plan(
     plan_id: int,
     payload: CyclePlanUpdate,
     session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ):
     """Изменить план (периодичность/дата/зона/активность)."""
-    plan = await session.get(CycleCountPlan, plan_id)
-    if plan is None:
-        raise HTTPException(status_code=404, detail="План не найден")
+    plan = await _owned_inventory_row(session, core, _, CycleCountPlan, plan_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(plan, field, value)
     await session.commit()
@@ -1499,29 +1835,28 @@ async def update_cycle_plan(
 @router.post("/cycle-plans/{plan_id}/run", response_model=InventoryDetailOut)
 async def run_cycle_plan(
     plan_id: int,
+    payload: InventorySourceInput,
     session: AsyncSession = Depends(get_session),
     core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ) -> InventoryDetailOut:
-    """Запустить пересчёт по плану: создать InventoryCount, заполнить из 1С, сдвинуть срок.
-
-    Зона плана пока информативна (1С-зеркало — по складу); фиксируется в примечании.
-    # ponytail: зональный пересчёт по WMS-ячейкам — когда понадобится точность по зоне.
-    """
-    plan = await session.get(CycleCountPlan, plan_id)
-    if plan is None:
-        raise HTTPException(status_code=404, detail="План не найден")
-    if core.services.stock is None:
-        raise HTTPException(status_code=503, detail="Шлюз остатков (1С/integrations) не подключён")
+    """Новый пересчёт физического журнала с повторным подтверждением его полноты пользователем."""
+    plan = await _owned_inventory_row(session, core, _, CycleCountPlan, plan_id)
+    _confirmed_inventory_source(plan)
+    confirmation = await _inventory_confirmation(session, core, _, plan.organization_id, payload)
     note = f"Цикл-каунт {plan.warehouse}" + (f" / зона {plan.zone}" if plan.zone else "")
-    doc = InventoryCount(warehouse=plan.warehouse, note=note, status="open")
+    doc = InventoryCount(organization_id=plan.organization_id, warehouse=plan.warehouse, note=note, status="open", **confirmation)
     session.add(doc)
     await session.flush()
     doc.number = f"ИНВ-2026-{doc.id:04d}"
-    await _fill_inventory_from_1c(session, core, doc)
-    plan.last_run_at = datetime.utcnow()
-    plan.next_due_date = date.today() + timedelta(days=plan.cadence_days)
-    await session.commit()
+    try:
+        await _fill_inventory_from_physical(session, doc)
+        plan.last_run_at = datetime.utcnow()
+        plan.next_due_date = date.today() + timedelta(days=plan.cadence_days)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
     await session.refresh(doc)
     return await _inventory_detail(session, doc)
 

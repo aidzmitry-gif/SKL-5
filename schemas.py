@@ -2,15 +2,19 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class StockMovementCreate(BaseModel):
-    sku_code: str
-    warehouse: str = "Главный"
-    kind: str = "in"  # in|out
-    qty: float = 0
+    model_config = ConfigDict(str_strip_whitespace=True)
+    organization_id: int = Field(gt=0, strict=True)
+    sku_code: str = Field(min_length=1, max_length=64)
+    warehouse: str = Field(default="Главный", min_length=1, max_length=128)
+    kind: Literal["in", "out"] = "in"  # in|out
+    qty: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
     reason: str = ""
     location_id: int | None = None
     batch_ref: str = ""
@@ -21,6 +25,7 @@ class StockMovementCreate(BaseModel):
 class StockMovementOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    organization_id: int | None = None
     id: int
     sku_code: str
     warehouse: str
@@ -40,9 +45,11 @@ class StockMovementOut(BaseModel):
 class MovementOpIn(BaseModel):
     """Приёмка/отгрузка: kind и reason задаёт роут, qty — положительная величина."""
 
-    sku_code: str
-    qty: float
-    warehouse: str = "Главный"
+    model_config = ConfigDict(str_strip_whitespace=True)
+    organization_id: int = Field(gt=0, strict=True)
+    sku_code: str = Field(min_length=1, max_length=64)
+    qty: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    warehouse: str = Field(default="Главный", min_length=1, max_length=128)
     location_id: int | None = None
     batch_ref: str = ""
     doc_ref: str = ""
@@ -52,9 +59,11 @@ class MovementOpIn(BaseModel):
 class TransferIn(BaseModel):
     """Перемещение: пара движений out@from + in@to, связаны doc_ref."""
 
-    sku_code: str
-    qty: float
-    warehouse: str = "Главный"
+    model_config = ConfigDict(str_strip_whitespace=True)
+    organization_id: int = Field(gt=0, strict=True)
+    sku_code: str = Field(min_length=1, max_length=64)
+    qty: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    warehouse: str = Field(default="Главный", min_length=1, max_length=128)
     from_location_id: int | None = None
     to_location_id: int | None = None
     batch_ref: str = ""
@@ -64,9 +73,11 @@ class TransferIn(BaseModel):
 class AdjustmentIn(BaseModel):
     """Ручная коррекция: qty знаковая (+ излишек → in, − недостача → out)."""
 
-    sku_code: str
-    qty: float
-    warehouse: str = "Главный"
+    model_config = ConfigDict(str_strip_whitespace=True)
+    organization_id: int = Field(gt=0, strict=True)
+    sku_code: str = Field(min_length=1, max_length=64)
+    qty: Decimal = Field(max_digits=14, decimal_places=2)
+    warehouse: str = Field(default="Главный", min_length=1, max_length=128)
     location_id: int | None = None
     batch_ref: str = ""
     note: str = ""
@@ -102,6 +113,7 @@ class LocationOut(BaseModel):
 
 
 class BalanceRow(BaseModel):
+    organization_id: int
     sku_code: str
     sku_title: str
     warehouse: str
@@ -196,12 +208,28 @@ class StockMirror(BaseModel):
 # --- Инвентаризация (пересчёт склада, сверка с 1С) ---
 
 
-class InventoryCountCreate(BaseModel):
+class InventorySourceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    expected_source: Literal["wms_physical"]
+    source_evidence: str = Field(min_length=1, max_length=1000)
+    journal_complete: bool = Field(strict=True)
+
+
+class InventoryCountCreate(InventorySourceInput):
+    organization_id: int = Field(gt=0, strict=True)
     warehouse: str = "Главный"
     note: str = ""
 
 
 class InventoryCountOut(BaseModel):
+    snapshot_version: str | None
+    snapshot_cutoff: int | None
+    snapshot_at: datetime | None
+    expected_source: str | None
+    source_evidence: str | None
+    journal_confirmed_by: str | None
+    journal_confirmed_at: datetime | None
+    organization_id: int | None
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -214,12 +242,14 @@ class InventoryCountOut(BaseModel):
 
 
 class InventoryLineCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     sku_code: str
-    counted_qty: float | None = None  # можно сразу внести факт
+    counted_qty: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)  # можно сразу внести факт
 
 
 class InventoryLineUpdate(BaseModel):
-    counted_qty: float | None = None
+    model_config = ConfigDict(extra="forbid")
+    counted_qty: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
     note: str | None = None
 
 
@@ -228,9 +258,9 @@ class InventoryLineOut(BaseModel):
     sku_code: str
     sku_title: str
     unit: str
-    expected_qty: float  # снимок ожидаемого из 1С
+    expected_qty: float  # снимок подтверждённого физического журнала юрлица
     counted_qty: float | None  # факт пересчёта (None — ещё не считали)
-    unit_cost: float | None  # себес единицы из 1С (для денежной оценки расхождения)
+    unit_cost: float | None  # неизвестна без подтверждённого источника оценки
     variance: float | None  # counted − expected (None пока не считали)
     variance_value: float | None  # variance × unit_cost (деньги; None без себеса/факта)
     note: str
@@ -241,9 +271,9 @@ class InventorySummary(BaseModel):
     counted: int  # из них с внесённым фактом
     shortages: int  # строк с недостачей (variance < 0)
     surpluses: int  # строк с излишком (variance > 0)
-    shortage_value: float  # суммарная стоимость недостач (≤0)
-    surplus_value: float  # суммарная стоимость излишков (≥0)
-    net_value: float  # итог по деньгам (недостача + излишек)
+    shortage_value: float | None  # None, если оценка хотя бы одной недостачи неизвестна
+    surplus_value: float | None  # None, если оценка хотя бы одного излишка неизвестна
+    net_value: float | None  # неизвестная оценка не подменяется нулём
 
 
 class InventoryDetailOut(InventoryCountOut):
@@ -255,18 +285,21 @@ class InventoryDetailOut(InventoryCountOut):
 
 
 class ReceiptLineIn(BaseModel):
-    sku_code: str
-    expected_qty: float = 0
+    model_config = ConfigDict(str_strip_whitespace=True)
+    sku_code: str = Field(min_length=1, max_length=64)
+    expected_qty: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
     batch_ref: str = ""
     location_id: int | None = None
 
 
 class ReceiptCreate(BaseModel):
-    warehouse: str = "Главный"
+    model_config = ConfigDict(str_strip_whitespace=True)
+    organization_id: int = Field(gt=0, strict=True)
+    warehouse: str = Field(default="Главный", min_length=1, max_length=128)
     counterparty: str = ""
     source: str = "manual"
     entity_ref: str = ""
-    lines: list[ReceiptLineIn] = []
+    lines: list[ReceiptLineIn] = Field(min_length=1)
 
 
 class ReceiptLineOut(BaseModel):
@@ -286,6 +319,7 @@ class ReceiptLineOut(BaseModel):
 class ReceiptOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    organization_id: int | None = None
     id: int
     number: str
     source: str
@@ -300,17 +334,19 @@ class ReceiptOut(BaseModel):
 
 class ReceiptDetailOut(ReceiptOut):
     lines: list[ReceiptLineOut]
+    qc_revision: str
 
 
 class QcLineDecision(BaseModel):
     line_id: int
-    accepted_qty: float = 0
-    rejected_qty: float = 0
+    accepted_qty: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
+    rejected_qty: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
     reject_reason: str = ""
     location_id: int | None = None
 
 
 class QcDecisionIn(BaseModel):
+    expected_revision: str = Field(min_length=64, max_length=64)
     decisions: list[QcLineDecision] = []
     decided_by: str = ""
 
@@ -319,10 +355,12 @@ class QcDecisionIn(BaseModel):
 
 
 class TaskCreate(BaseModel):
-    kind: str  # putaway | pick
-    sku_code: str
-    qty: float = 0
-    warehouse: str = "Главный"
+    model_config = ConfigDict(str_strip_whitespace=True)
+    organization_id: int = Field(gt=0, strict=True)
+    kind: Literal["putaway", "pick"]
+    sku_code: str = Field(min_length=1, max_length=64)
+    qty: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    warehouse: str = Field(default="Главный", min_length=1, max_length=128)
     from_location_id: int | None = None
     to_location_id: int | None = None
     doc_ref: str = ""
@@ -341,6 +379,7 @@ class TaskUpdate(BaseModel):
 class TaskOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    organization_id: int | None = None
     id: int
     kind: str
     status: str
@@ -424,7 +463,8 @@ class AlertsEmitOut(BaseModel):
 # --- Цикл-каунт (расписание периодического пересчёта) ---
 
 
-class CyclePlanCreate(BaseModel):
+class CyclePlanCreate(InventorySourceInput):
+    organization_id: int = Field(gt=0, strict=True)
     warehouse: str = "Главный"
     zone: str | None = None
     cadence_days: int = 30
@@ -434,6 +474,7 @@ class CyclePlanCreate(BaseModel):
 
 
 class CyclePlanUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     cadence_days: int | None = None
     next_due_date: date | None = None
     active: bool | None = None
@@ -442,6 +483,11 @@ class CyclePlanUpdate(BaseModel):
 
 
 class CyclePlanOut(BaseModel):
+    expected_source: str | None
+    source_evidence: str | None
+    journal_confirmed_by: str | None
+    journal_confirmed_at: datetime | None
+    organization_id: int | None
     model_config = ConfigDict(from_attributes=True)
 
     id: int

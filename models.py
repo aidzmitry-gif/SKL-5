@@ -4,7 +4,18 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.db.base import Base
@@ -26,6 +37,7 @@ class StockMovement(Base):
     __tablename__ = "stock_movement"
     __table_args__ = {"schema": "wms"}
 
+    organization_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     id: Mapped[int] = mapped_column(primary_key=True)
     sku_code: Mapped[str] = mapped_column(String(64))
     warehouse: Mapped[str] = mapped_column(String(128), default="Главный", server_default="Главный")
@@ -72,7 +84,21 @@ class InventoryCount(Base):
     """
 
     __tablename__ = "inventory_count"
-    __table_args__ = {"schema": "wms"}
+    __table_args__ = (
+        CheckConstraint("organization_id > 0", name="wms_inventory_count_org_positive"),
+        {"schema": "wms"},
+    )
+
+    # NULL legacy rows require a separate, reviewed ownership decision.
+    organization_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    expected_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_evidence: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    journal_confirmed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    journal_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    snapshot_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    snapshot_cutoff: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    snapshot_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     number: Mapped[str] = mapped_column(String(64), default="", server_default="")
@@ -141,6 +167,8 @@ class Receipt(Base):
     __tablename__ = "receipt"
     __table_args__ = {"schema": "wms"}
 
+    organization_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True, unique=True)
     id: Mapped[int] = mapped_column(primary_key=True)
     number: Mapped[str] = mapped_column(String(64), default="", server_default="")
     source: Mapped[str] = mapped_column(String(16), default="manual", server_default="manual")
@@ -187,6 +215,7 @@ class Task(Base):
     __tablename__ = "task"
     __table_args__ = {"schema": "wms"}
 
+    organization_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     id: Mapped[int] = mapped_column(primary_key=True)
     kind: Mapped[str] = mapped_column(String(16))  # putaway | pick
     status: Mapped[str] = mapped_column(String(16), default="open", server_default="open")
@@ -238,7 +267,18 @@ class CycleCountPlan(Base):
     """
 
     __tablename__ = "cycle_count_plan"
-    __table_args__ = {"schema": "wms"}
+    __table_args__ = (
+        CheckConstraint("organization_id > 0", name="wms_cycle_count_plan_org_positive"),
+        {"schema": "wms"},
+    )
+
+    # NULL legacy rows require a separate, reviewed ownership decision.
+    organization_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    expected_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_evidence: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    journal_confirmed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    journal_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     warehouse: Mapped[str] = mapped_column(
@@ -250,3 +290,23 @@ class CycleCountPlan(Base):
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     abc_class: Mapped[str | None] = mapped_column(String(1), nullable=True)
+
+
+class ReservationVersion(Base):
+    """Immutable remaining reservation snapshot; never a physical stock movement."""
+    __tablename__ = "reservation_version"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "source", "version", name="wms_reservation_source_version"),
+        CheckConstraint("organization_id > 0 AND version > 0 AND qty >= 0 AND qty < 1000000000000", name="wms_reservation_valid"),
+        {"schema": "wms"},
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    organization_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String(200), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    sku_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    warehouse: Mapped[str] = mapped_column(String(128), nullable=False)
+    qty: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    evidence: Mapped[str] = mapped_column(String(1000), nullable=False)
+    actor: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
