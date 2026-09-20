@@ -828,7 +828,7 @@ async def _snapshot_from_1c(
 
 
 # Only physical movements participate. Legacy reservation mirrors are never stock.
-_INVENTORY_PHYSICAL_REASONS = {"", "receipt", "shipment", "transfer", "adjustment", "pick", "pack"}
+_INVENTORY_PHYSICAL_REASONS = {"", "receipt", "shipment", "transfer", "adjustment", "pick", "pack", "production_issue"}
 
 
 async def _inventory_confirmation(session, core, user, organization_id, payload):
