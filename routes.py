@@ -137,6 +137,11 @@ async def create_movement(
 ):
     """Зафиксировать движение по складу (низкоуровневое; обычно — операции ниже)."""
     await visible_organization_ids(session, core, _, payload.organization_id)
+    # A supplier receipt must have the procurement-owned primary document and
+    # the linked QC receipt.  A generic stock movement has neither, so it must
+    # never be presented as a substitute for an incoming invoice.
+    if payload.kind == "in" and payload.reason == "receipt":
+        raise HTTPException(409, "Supplier receipts are created in Procurement; prepare warehouse QC from the primary receipt")
     await _validate_movement_locations(session, payload.warehouse, payload.location_id)
     from modules.wms.invoice_shipments import guard_free
     await guard_free(session, payload.organization_id, {(payload.sku_code, payload.warehouse): Decimal(str(payload.qty)) if payload.kind == "out" else Decimal("0")}, [payload.doc_ref])
@@ -158,8 +163,7 @@ async def create_movement(
     return obj
 
 
-# --- Складские операции: всё пишется движениями в ОПЕРАЦИОННЫЙ журнал WMS (дубль факта;
-#     1С остаётся истиной остатка — мы её не трогаем). ---
+# --- Складские операции. Supplier primary receipts belong to Procurement. ---
 
 
 @router.post("/receipt", response_model=StockMovementOut, status_code=201)
@@ -169,25 +173,9 @@ async def receipt(
     core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ):
-    """Приёмка: приходное движение (reason=receipt)."""
+    """Retired supplier-receipt shortcut; keep the URL fail-closed for clients."""
     await visible_organization_ids(session, core, _, payload.organization_id)
-    await _validate_movement_locations(session, payload.warehouse, payload.location_id)
-    obj = StockMovement(
-        organization_id=payload.organization_id,
-        sku_code=payload.sku_code,
-        warehouse=payload.warehouse,
-        kind="in",
-        qty=Decimal(str(payload.qty)),
-        reason="receipt",
-        location_id=payload.location_id,
-        batch_ref=payload.batch_ref,
-        doc_ref=payload.doc_ref,
-        note=payload.note,
-    )
-    session.add(obj)
-    await session.commit()
-    await session.refresh(obj)
-    return obj
+    raise HTTPException(409, "Supplier receipts are created in Procurement; prepare warehouse QC from the primary receipt")
 
 
 @router.post("/shipment", response_model=StockMovementOut, status_code=201)
@@ -1218,33 +1206,9 @@ async def create_receipt(
     core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.count")),
 ) -> ReceiptDetailOut:
-    """Ручная приёмка: документ в pending_qc + строки. Приход — после QC accept (D2)."""
+    """Retired manual supplier-receipt creation; WMS accepts linked physical documents only."""
     await visible_organization_ids(session, core, _, payload.organization_id)
-    r = Receipt(
-        organization_id=payload.organization_id,
-        source=payload.source or "manual",
-        entity_ref=payload.entity_ref,
-        warehouse=payload.warehouse,
-        counterparty=payload.counterparty,
-        status="pending_qc",
-    )
-    session.add(r)
-    await session.flush()
-    r.number = f"ПРМ-2026-{r.id:04d}"
-    for ln in payload.lines:
-        session.add(
-            ReceiptLine(
-                receipt_id=r.id,
-                sku_code=ln.sku_code,
-                sku_title=await _sku_title(session, ln.sku_code),
-                expected_qty=Decimal(str(ln.expected_qty)),
-                batch_ref=ln.batch_ref,
-                location_id=ln.location_id,
-            )
-        )
-    await session.commit()
-    await session.refresh(r)
-    return await _receipt_detail(session, r)
+    raise HTTPException(409, "Create the supplier primary receipt in Procurement, then prepare its warehouse QC receipt")
 
 
 @router.post("/receipts/{receipt_id}/organization", response_model=ReceiptDetailOut)
