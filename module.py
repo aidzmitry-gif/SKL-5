@@ -13,6 +13,7 @@ from modules.wms.production_material_issues import (
     ProductionMaterialIssue,  # noqa: F401 — register durable source model
 )
 from modules.wms.reservation_gateway import WmsReservationService
+from modules.wms.warehouse_catalog import router as warehouse_catalog_router
 
 
 class WmsModule(ModuleContract):
@@ -26,6 +27,7 @@ class WmsModule(ModuleContract):
         core.include_router(physical_router, prefix=self.api_prefix)
         core.include_router(remainder_router, prefix=self.api_prefix)
         core.include_router(primary_receipt_router, prefix=self.api_prefix)
+        core.include_router(warehouse_catalog_router, prefix=self.api_prefix)
         # Резерв создаёт подбор; физическое движение требует отдельного подтверждения.
         core.subscribe("sales.stock.reserved", on_stock_reserved)
         core.subscribe("sales.stock.released", on_stock_released)

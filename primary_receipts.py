@@ -21,7 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from config.access import is_package_allowed
 from core.db.base import Base
 from core.domain.models import OutboxEvent, Sku
-from modules.wms.models import Receipt, ReceiptLine
+from modules.wms.models import Receipt, ReceiptLine, WarehouseDirectory
 
 
 class PhysicalLine(BaseModel):
@@ -42,6 +42,8 @@ class PrimaryReceiptCommand(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     request_key: UUID
     expected_version: int = Field(gt=0, strict=True)
+    warehouse_id: int | None = Field(default=None, gt=0, strict=True,
+                                     exclude_if=lambda value: value is None)
     warehouse: str = Field(min_length=1, max_length=128)
     evidence: str = Field(min_length=1, max_length=1000)
     lines: list[PhysicalLine] = Field(min_length=1, max_length=300)
@@ -167,6 +169,16 @@ async def create_from_primary(session, core, user, organization_id, source_recei
         if receipt is None or receipt.organization_id != organization_id:
             raise ValueError("Stored physical receipt ownership is inconsistent")
         return previous
+    if command.warehouse_id is None:
+        raise ValueError("Select the physical warehouse from the organization catalogue")
+    warehouse = await session.scalar(select(WarehouseDirectory).where(
+        WarehouseDirectory.id == command.warehouse_id,
+        WarehouseDirectory.organization_id == organization_id,
+        WarehouseDirectory.is_active.is_(True),
+        WarehouseDirectory.name == command.warehouse,
+    ).with_for_update(read=True))
+    if warehouse is None:
+        raise ValueError("Physical warehouse catalogue selection changed; select it again")
     source = await procurement.warehouse_receipt_source(session, organization_id, source_receipt_id, command.expected_version)
     existing = (await session.scalars(select(PrimaryReceiptBinding).where(
         PrimaryReceiptBinding.organization_id == organization_id,

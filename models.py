@@ -51,6 +51,25 @@ class StockMovement(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class WarehouseDirectory(Base):
+    """Company-owned physical warehouse identity; legacy names need adoption."""
+
+    __tablename__ = "warehouse_directory"
+    __table_args__ = (
+        CheckConstraint("organization_id > 0", name="wms_warehouse_directory_org_positive"),
+        UniqueConstraint("organization_id", "name", name="uq_wms_warehouse_directory_name"),
+        {"schema": "wms"},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("accounting.organization.id"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    title: Mapped[str] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class WarehouseOp(Base):
     """Складская операция в воронке: от ожидания поступления до отгрузки.
 
