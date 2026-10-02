@@ -187,6 +187,6 @@ class WmsReservationService:
                 "line_count": len(snapshot["lines"]),
                 "status": "verified_internal_act",
                 "tn_ttn_status": "not_certified",
-                "document_url": f"/wms/organizations/{organization_id}/physical-shipments/by-key/{result['source_key']}/document",
+                "document_url": f"/api/wms/organizations/{organization_id}/physical-shipments/by-key/{result['source_key']}/document",
             })
         return {"status": "internal_acts_only", "tn_ttn_status": "not_certified", "items": items}
