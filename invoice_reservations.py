@@ -37,6 +37,7 @@ from core.services.wms import (  # noqa: F401 -- preserve existing internal impo
 from modules.wms.models import ReservationVersion, StockMovement, Task
 from modules.wms.reservation_events import ReservationEventState, ReservationPick
 from modules.wms.reservations import _latest_versions
+from modules.wms.warehouse_modes import current_modes, frozen_modes
 
 
 class InvoiceReservation(Base):
@@ -46,6 +47,7 @@ class InvoiceReservation(Base):
     organization_id: Mapped[int] = mapped_column(Integer, index=True)
     digest: Mapped[str] = mapped_column(String(64))
     snapshot: Mapped[dict] = mapped_column(JSON)
+    execution_modes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     actor: Mapped[str] = mapped_column(String(200))
 
 
@@ -156,9 +158,18 @@ async def reserve(session, organization_id, source, data: ReserveInput, actor):
     digest = hashlib.sha256(json.dumps(basis, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     existing = await session.get(InvoiceReservation, source["document_id"])
     if existing:
+        try:
+            frozen_modes(existing.execution_modes, {row["warehouse"] for row in rows})
+        except ValueError:
+            _reject("reservation_execution_mode_corrupt")
         if existing.organization_id != organization_id or existing.digest != digest:
             raise HTTPException(409, "Invoice already has another confirmed reservation")
         return {"digest": existing.digest, "snapshot": existing.snapshot}
+    try:
+        execution_modes = await current_modes(session, organization_id,
+            {row["warehouse"] for row in rows}, lock=True)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     # Import locally: route helpers are within WMS; no accounting/sales table reads.
     from modules.wms.routes import _physical_inventory_snapshot
 
@@ -182,7 +193,8 @@ async def reserve(session, organization_id, source, data: ReserveInput, actor):
                 raise HTTPException(409, "Insufficient confirmed free stock for the invoice")
     snapshot = {**basis, "physical_basis": snapshots}
     session.add(InvoiceReservation(document_id=source["document_id"], organization_id=organization_id,
-                                   digest=digest, snapshot=snapshot, actor=actor))
+                                   digest=digest, snapshot=snapshot,
+                                   execution_modes=execution_modes, actor=actor))
     for row in rows:
         session.add(ReservationVersion(organization_id=organization_id, source=row["source"], version=1,
             sku_code=row["sku_code"], warehouse=row["warehouse"], qty=Decimal(row["qty"]),
@@ -277,6 +289,10 @@ def _reservation_identity(reservation, org, source):
         _reject("reservation_identity_mismatch")
     basis = {key: snap[key] for key in (
         "document_id", "organization_id", "version", "content_sha256", "allocations", "evidence")}
+    try:
+        frozen_modes(reservation.execution_modes, {row["warehouse"] for row in snap["allocations"]})
+    except (KeyError, TypeError, ValueError):
+        _reject("reservation_execution_mode_corrupt")
     legacy_digest = hashlib.sha256(json.dumps(basis, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     if (legacy_digest != reservation.digest or snap["document_id"] != source["document_id"]
             or snap["organization_id"] != org):
@@ -343,6 +359,9 @@ async def _remaining(session, reservation, allocations):
         .where(ReservationPick.document_id == reservation.document_id).order_by(Task.id)
         .with_for_update().execution_options(populate_existing=True))).all()
     matrix = _matrix((a["sku_code"], a["warehouse"], a["qty"]) for a in allocations)
+    modes = frozen_modes(reservation.execution_modes, {row["warehouse"] for row in allocations})
+    wms_matrix = _matrix((a["sku_code"], a["warehouse"], a["qty"])
+                         for a in allocations if modes[a["warehouse"]])
     quantities = defaultdict(lambda: Decimal("0"))
     for sku, _, qty in matrix:
         quantities[sku] += Decimal(qty)
@@ -359,13 +378,15 @@ async def _remaining(session, reservation, allocations):
     for task in tasks:
         if task.organization_id != reservation.organization_id or task.kind != "pick":
             _reject("pick_identity_mismatch")
+        if modes.get(task.warehouse) is not True:
+            _reject("pick_execution_mode_mismatch")
         exhausted = all(r.qty == 0 for r in latest if r.sku_code == task.sku_code and r.warehouse == task.warehouse)
         if task.status == "done" and task.done_at is not None and exhausted:
             pass
         elif task.status not in {"open", "in_progress", "canceled"} or task.done_at is not None:
             _reject("pick_execution_requires_reconciliation")
     if tasks or (state is not None and state.state == "reserved"):
-        if _matrix((t.sku_code, t.warehouse, t.qty) for t in tasks) != matrix:
+        if _matrix((t.sku_code, t.warehouse, t.qty) for t in tasks) != wms_matrix:
             _reject("pick_allocation_mismatch")
     refs = [f"sales:document:{reservation.document_id}"] + [f"PICK-{t.id:05d}" for t in tasks]
     if await session.scalar(select(StockMovement.id).where(

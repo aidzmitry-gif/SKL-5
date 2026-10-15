@@ -67,7 +67,6 @@ from modules.wms.schemas import (
     ReceiptOut,
     ReconOut,
     ReconRow,
-    StageUpdate,
     StockMirror,
     StockMirrorRow,
     StockMovementCreate,
@@ -80,10 +79,10 @@ from modules.wms.schemas import (
     TransferIn,
     ValuedBalancesOut,
     ValuedRow,
-    WarehouseOpCreate,
     WarehouseOpOut,
 )
 from modules.wms.stages import STAGES
+from modules.wms.warehouse_modes import current_modes, frozen_modes
 
 router = APIRouter(tags=["wms"])
 router.include_router(reservations_router)
@@ -137,6 +136,8 @@ async def create_movement(
 ):
     """Зафиксировать движение по складу (низкоуровневое; обычно — операции ниже)."""
     await visible_organization_ids(session, core, _, payload.organization_id)
+    if payload.reason.strip().casefold() in {"pick", "putaway", "pack", "production_issue"}:
+        raise HTTPException(409, "Движения WMS создаются штатными задачами склада, не через прямой ввод")
     # A supplier receipt must have the procurement-owned primary document and
     # the linked QC receipt.  A generic stock movement has neither, so it must
     # never be presented as a substitute for an incoming invoice.
@@ -649,40 +650,21 @@ async def board(
     return build_board(STAGES, rows, _to_card)
 
 
-@router.post("/ops", response_model=WarehouseOpOut, status_code=201)
+@router.post("/ops", status_code=409)
 async def create_op(
-    payload: WarehouseOpCreate,
-    session: AsyncSession = Depends(get_session),
     _: object = Depends(require_permission("wms.count")),
 ):
-    """Создать складскую операцию. Номер генерируется автоматически, если не задан."""
-    data = payload.model_dump()
-    data["amount"] = Decimal(str(data["amount"]))
-    obj = WarehouseOp(**data)
-    session.add(obj)
-    await session.flush()
-    if not obj.number:
-        obj.number = f"ОП-2026-{obj.id:04d}"
-    await session.commit()
-    await session.refresh(obj)
-    return obj
+    """Retired unscoped write path; new execution belongs to warehouse tasks."""
+    raise HTTPException(409, "Запись в устаревшие складские операции отключена; используйте складскую задачу с явно выбранным складом")
 
 
-@router.patch("/ops/{op_id}", response_model=WarehouseOpOut)
+@router.patch("/ops/{op_id}", status_code=409)
 async def update_op(
     op_id: int,
-    payload: StageUpdate,
-    session: AsyncSession = Depends(get_session),
     _: object = Depends(require_permission("wms.count")),
 ):
-    """Сменить стадию складской операции."""
-    obj = await session.get(WarehouseOp, op_id)
-    if obj is None:
-        raise HTTPException(status_code=404, detail="Операция не найдена")
-    obj.stage = payload.stage
-    await session.commit()
-    await session.refresh(obj)
-    return obj
+    """Retired unscoped write path; new execution belongs to warehouse tasks."""
+    raise HTTPException(409, "Запись в устаревшие складские операции отключена; используйте складскую задачу с явно выбранным складом")
 
 
 # --- Инвентаризация: пересчёт склада со сверкой против 1С (через шлюз) ---
@@ -1306,6 +1288,11 @@ async def accept_receipt(
         if r.status == "accepted":
             return await _receipt_detail(session, r)  # идемпотентно
         raise HTTPException(status_code=409, detail=f"Нельзя провести приёмку в статусе {r.status}")
+    try:
+        modes = await current_modes(session, r.organization_id, {r.warehouse}, lock=True)
+    except ValueError as exc:
+        raise HTTPException(409, "Приёмка с неизвестным режимом склада требует сверки") from exc
+    create_putaway_tasks = modes[r.warehouse]
     lines = (
         await session.execute(
             select(ReceiptLine).where(ReceiptLine.receipt_id == receipt_id).execution_options(populate_existing=True)
@@ -1332,19 +1319,20 @@ async def accept_receipt(
                     batch_ref=line.batch_ref,
                 )
             )
-            # авто-задача размещения: из приёмной ячейки в постоянную (выбирается при завершении)
-            session.add(
-                Task(
-                    kind="putaway",
-                    organization_id=r.organization_id,
-                    sku_code=line.sku_code,
-                    qty=accepted,
-                    warehouse=r.warehouse,
-                    from_location_id=line.location_id,
-                    doc_ref=r.number,
-                    status="open",
+            if create_putaway_tasks:
+                # Авто-задача размещения создаётся только при включённом WMS-режиме склада.
+                session.add(
+                    Task(
+                        kind="putaway",
+                        organization_id=r.organization_id,
+                        sku_code=line.sku_code,
+                        qty=accepted,
+                        warehouse=r.warehouse,
+                        from_location_id=line.location_id,
+                        doc_ref=r.number,
+                        status="open",
+                    )
                 )
-            )
     r.status = "accepted"
     r.decided_at = datetime.utcnow()
     await record_arrival(session, r, lines)
@@ -1414,6 +1402,14 @@ async def create_task(
 ):
     """Создать задачу (put-away/pick) вручную."""
     await visible_organization_ids(session, core, _, payload.organization_id)
+    if "warehouse" not in payload.model_fields_set:
+        raise HTTPException(422, "Укажите склад для задачи явно")
+    try:
+        modes = await current_modes(session, payload.organization_id, {payload.warehouse}, lock=True)
+    except ValueError as exc:
+        raise HTTPException(409, "Неизвестный или отключённый склад; обновите справочник") from exc
+    if not modes[payload.warehouse]:
+        raise HTTPException(409, "WMS execution is disabled for this warehouse")
     await _validate_movement_locations(session, payload.warehouse, payload.from_location_id, payload.to_location_id)
     t = Task(**payload.model_dump())
     session.add(t)
@@ -1437,10 +1433,49 @@ async def update_task(
         raise HTTPException(status_code=404, detail="Задача не найдена")
     t = await authorize_row(session, core, _, t)
     from modules.wms.invoice_shipments import guard_free
-    from modules.wms.reservation_events import ReservationPick
-    if t.kind == "pick" and await session.get(ReservationPick, t.id) is not None:
-        if payload.status not in (None, "in_progress") or payload.to_location_id is not None:
-            raise HTTPException(409, "Invoice-owned picks allow assignment, instructions and in_progress only")
+    from modules.wms.reservation_events import ReservationPick, validate_legacy_pick_binding
+    invoice_pick = await session.get(ReservationPick, t.id)
+    if invoice_pick is not None:
+        from modules.wms.invoice_reservations import InvoiceReservation
+
+        reservation = await session.scalar(select(InvoiceReservation).where(
+            InvoiceReservation.document_id == invoice_pick.document_id,
+        ).with_for_update().execution_options(populate_existing=True))
+        if reservation is None:
+            try:
+                if t.kind != "pick" or t.organization_id is None:
+                    raise ValueError("Legacy pick identity is incomplete")
+                await validate_legacy_pick_binding(
+                    session, invoice_pick.document_id, t.organization_id, t.id,
+                )
+            except ValueError as exc:
+                raise HTTPException(409, "Legacy invoice pick requires reservation-event reconciliation") from exc
+            if payload.status not in (None, "in_progress") or payload.to_location_id is not None:
+                raise HTTPException(409, "Legacy invoice picks allow assignment, instructions and in_progress only")
+        elif reservation.organization_id != t.organization_id or t.kind != "pick":
+            raise HTTPException(409, "Invoice-owned pick identity requires reconciliation")
+        else:
+            try:
+                allocation_rows = reservation.snapshot["allocations"]
+                modes = frozen_modes(reservation.execution_modes,
+                                     {row["warehouse"] for row in allocation_rows})
+                mode_enabled = modes[t.warehouse]
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HTTPException(409, "Invoice-owned pick execution mode requires reconciliation") from exc
+            if not mode_enabled:
+                raise HTTPException(409, "Invoice-owned pick exists for a document-only warehouse; reconcile it")
+            if payload.status not in (None, "in_progress") or payload.to_location_id is not None:
+                raise HTTPException(409, "Invoice-owned picks allow assignment, instructions and in_progress only")
+    else:
+        if t.organization_id is None:
+            raise HTTPException(409, "Task organization is unknown; reconcile its warehouse before editing")
+        try:
+            modes = await current_modes(session, t.organization_id, {t.warehouse}, lock=True)
+        except ValueError as exc:
+            raise HTTPException(409, "Task warehouse mode is unknown; reconcile before editing") from exc
+        if not modes[t.warehouse] and (payload.status != "canceled" or payload.assignee is not None
+                or payload.to_location_id is not None or payload.note is not None):
+            raise HTTPException(409, "WMS execution is disabled; only canceling a legacy task is allowed")
     if t.status in ("done", "canceled"):
         raise HTTPException(status_code=409, detail="Задача уже закрыта")
     if payload.to_location_id is not None or payload.status == "done":
@@ -1495,6 +1530,14 @@ async def pack(
     даёт отгрузка (/shipment reason=shipment).
     """
     await visible_organization_ids(session, core, _, payload.organization_id)
+    if "warehouse" not in payload.model_fields_set:
+        raise HTTPException(422, "Укажите склад для упаковки явно")
+    try:
+        modes = await current_modes(session, payload.organization_id, {payload.warehouse}, lock=True)
+    except ValueError as exc:
+        raise HTTPException(409, "Неизвестный или отключённый склад; обновите справочник") from exc
+    if not modes[payload.warehouse]:
+        raise HTTPException(409, "WMS execution is disabled for this warehouse")
     await _validate_movement_locations(session, payload.warehouse, payload.location_id)
     qty = Decimal(str(payload.qty))
     if qty <= 0:

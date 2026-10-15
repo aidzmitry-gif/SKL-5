@@ -65,6 +65,7 @@ class WarehouseDirectory(Base):
     organization_id: Mapped[int] = mapped_column(ForeignKey("accounting.organization.id"), index=True)
     name: Mapped[str] = mapped_column(String(128))
     title: Mapped[str] = mapped_column(String(255))
+    wms_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     created_by: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

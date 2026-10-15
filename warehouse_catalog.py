@@ -7,7 +7,8 @@ from sqlalchemy.exc import IntegrityError
 
 from core.runtime.deps import get_core, get_session
 from core.services.auth import require_permission
-from modules.wms.models import WarehouseDirectory
+from modules.wms.models import ReservationVersion, Task, WarehouseDirectory
+from modules.wms.reservations import _latest_versions
 
 router = APIRouter(tags=["Справочник складов"])
 
@@ -17,6 +18,13 @@ class WarehouseCreate(BaseModel):
 
     name: str = Field(min_length=1, max_length=128)
     title: str = Field(min_length=1, max_length=255)
+
+
+class WarehouseModeUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_wms_enabled: bool
+    wms_enabled: bool
 
 
 async def transaction(session=Depends(get_session)):
@@ -41,6 +49,7 @@ async def scoped(org_id, session, core, user):
 def output(row):
     return {"id": row.id, "organization_id": row.organization_id,
             "name": row.name, "title": row.title, "is_active": row.is_active,
+            "wms_enabled": row.wms_enabled,
             "created_by": row.created_by, "created_at": row.created_at}
 
 
@@ -75,5 +84,53 @@ async def create_warehouse(org_id: int, data: WarehouseCreate,
     row = WarehouseDirectory(organization_id=org_id, name=data.name, title=data.title,
                              is_active=True, created_by=actor)
     session.add(row)
+    await session.flush()
+    return output(row)
+
+
+@router.patch("/organizations/{org_id}/warehouses/{warehouse_id}/execution-mode")
+async def update_execution_mode(org_id: int, warehouse_id: int, data: WarehouseModeUpdate,
+                                session=Depends(transaction, scope="function"),
+                                core=Depends(get_core), user=Depends(require_permission("wms.count"))):
+    accounting = getattr(core.services, "accounting", None)
+    authorize = getattr(accounting, "warehouse_mode_admin", None)
+    if not callable(authorize):
+        raise HTTPException(503, "Warehouse mode administration is unavailable")
+    actor = await authorize(session, org_id, user)
+    row = await session.scalar(select(WarehouseDirectory).where(
+        WarehouseDirectory.id == warehouse_id,
+        WarehouseDirectory.organization_id == org_id,
+        WarehouseDirectory.is_active.is_(True),
+    ).with_for_update().execution_options(populate_existing=True))
+    if row is None:
+        raise HTTPException(404, "Active warehouse not found in this organization")
+    if type(row.wms_enabled) is not bool:
+        raise HTTPException(409, "Stored warehouse mode requires reconciliation")
+    if row.wms_enabled != data.expected_wms_enabled:
+        raise HTTPException(409, "Warehouse mode changed; refresh the catalogue and retry")
+    if row.wms_enabled == data.wms_enabled:
+        return output(row)
+
+    latest = _latest_versions(org_id)
+    outstanding = await session.scalar(select(ReservationVersion.id).join(latest,
+        (ReservationVersion.source == latest.c.source)
+        & (ReservationVersion.version == latest.c.version)
+    ).where(ReservationVersion.organization_id == org_id,
+            ReservationVersion.warehouse == row.name,
+            ReservationVersion.qty > 0).limit(1))
+    active_task = await session.scalar(select(Task.id).where(
+        Task.warehouse == row.name,
+        Task.status.in_(("open", "in_progress")),
+        or_(Task.organization_id == org_id, Task.organization_id.is_(None)),
+    ).order_by(Task.id).limit(1).with_for_update())
+    if outstanding is not None or active_task is not None:
+        raise HTTPException(409, "Warehouse mode cannot change while reservations or active tasks remain")
+
+    previous = row.wms_enabled
+    row.wms_enabled = data.wms_enabled
+    core.event_bus.emit(session, "wms.warehouse.execution_mode_changed", {
+        "organization_id": org_id, "warehouse_id": row.id, "warehouse": row.name,
+        "previous_wms_enabled": previous, "wms_enabled": row.wms_enabled, "actor": actor,
+    })
     await session.flush()
     return output(row)

@@ -29,7 +29,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from core.db.base import Base
 from core.runtime.core import Core
 from core.runtime.deps import get_core, get_session
-from core.services.auth import require_permission
+from core.services.auth import get_current_user, require_permission
 from modules.wms.invoice_reservations import (
     InvoiceReservation,
     _digest,
@@ -40,6 +40,7 @@ from modules.wms.invoice_reservations import (
     invoice_availability,
 )
 from modules.wms.models import ReservationVersion, StockMovement
+from modules.wms.warehouse_modes import frozen_modes
 
 
 class PhysicalShipmentAct(Base):
@@ -130,6 +131,33 @@ def reject(message):
     raise HTTPException(409, message)
 
 
+def _act_execution_mode(act):
+    snapshot = act.snapshot if isinstance(act.snapshot, dict) else {}
+    mode = snapshot.get("execution_mode", "wms")
+    if not isinstance(mode, str) or mode not in {"document", "wms"}:
+        reject("physical_act_execution_mode_corrupt")
+    return mode
+
+
+def _batch_execution_mode(reservation, allocations, data):
+    try:
+        modes = frozen_modes(reservation.execution_modes, {row["warehouse"] for row in allocations})
+    except ValueError:
+        reject("reservation_execution_mode_corrupt")
+    available = {(row["line_no"], row["warehouse"]): row for row in allocations}
+    selected = set()
+    seen = set()
+    for item in data.lines:
+        key = (item.line_no, item.warehouse)
+        if key in seen or key not in available:
+            reject("physical_line_unknown_or_duplicate")
+        seen.add(key)
+        selected.add(modes[item.warehouse])
+    if len(selected) != 1:
+        reject("shipment_batch_mixes_execution_modes")
+    return "wms" if selected == {True} else "document"
+
+
 async def no_physical_act(session, document_id):
     if await session.scalar(select(PhysicalShipmentAct.id).where(PhysicalShipmentAct.document_id == document_id).limit(1)):
         reject("physical_act_excludes_no_shipment_release")
@@ -156,8 +184,12 @@ async def act_result(session, act):
         if fingerprint != original.digest:
             reject("physical_act_reservation_digest_corrupt")
         allocations = {a["source"]: a for a in original.snapshot["allocations"]}
+        modes = frozen_modes(original.execution_modes, {a["warehouse"] for a in allocations.values()})
     except (KeyError, TypeError, ValueError):
         reject("physical_act_reservation_corrupt")
+    execution_mode = _act_execution_mode(act)
+    if "execution_mode" not in snap and original.execution_modes is not None:
+        reject("physical_act_execution_mode_missing")
     lines = (await session.scalars(select(PhysicalShipmentLine).where(PhysicalShipmentLine.act_id == act.id)
         .order_by(PhysicalShipmentLine.source).execution_options(populate_existing=True))).all()
     if not lines or len(lines) != len(snap.get("lines", [])):
@@ -166,6 +198,9 @@ async def act_result(session, act):
         allocation = allocations.get(line.source)
         if not allocation or any(allocation[k] != getattr(line, k) for k in ("line_no", "sku_code", "warehouse")):
             reject("physical_line_allocation_corrupt")
+        if (line.warehouse not in modes
+                or ("wms" if modes[line.warehouse] else "document") != execution_mode):
+            reject("physical_line_execution_mode_mismatch")
         for key in ("source", "line_no", "sku_code", "warehouse", "before_id", "after_id", "movement_id"):
             if evidence.get(key) != getattr(line, key):
                 reject("physical_line_snapshot_corrupt")
@@ -186,7 +221,7 @@ async def act_result(session, act):
                 or movement.qty != line.qty or movement.doc_ref != f"physical-act:{act.id}"):
             reject("physical_movement_corrupt")
     return {"act_id": act.id, "source_key": act.source_key, "request_hash": act.request_hash,
-            "digest": act.digest, "snapshot": snap}
+            "digest": act.digest, "execution_mode": execution_mode, "snapshot": snap}
 
 
 async def proved_chain(session, reservation, allocations, chains):
@@ -269,6 +304,7 @@ async def preview(session, org, source):
     if receipt:
         released = {row["source"] for row in (await remainder_result(session, receipt))["snapshot"]["lines"]}
     lines = []
+    modes = frozen_modes(reservation.execution_modes, {row["warehouse"] for row in allocations})
     for allocation in sorted(allocations, key=lambda row: (row["line_no"], row["warehouse"])):
         balance = balances.get((allocation["sku_code"], allocation["warehouse"]), {})
         remaining = versions[allocation["source"]].qty
@@ -279,6 +315,7 @@ async def preview(session, org, source):
         lines.append({"line_no": allocation["line_no"], "sku_code": allocation["sku_code"],
                       "warehouse": allocation["warehouse"], "original_qty": format(_qty(allocation["qty"]), ".2f"),
                       "remaining_qty": format(remaining, ".2f"),
+                      "execution_mode": "wms" if modes[allocation["warehouse"]] else "document",
                       "physical": balance.get("physical"), "reserved": balance.get("reserved"),
                       "free": balance.get("free"), "blocking_reason": blocker})
     return {"reservation_digest": reservation.digest, "remaining_digest": _digest(before),
@@ -296,12 +333,16 @@ async def lookup(session, org, document_id, key):
     return act
 
 
-async def create(session, org, source, data, actor):
+async def create(session, org, source, data, actor, execution_mode="wms"):
     """Internal authorized facade. Fresh source_changed is caller's responsibility."""
+    if execution_mode not in {"wms", "document"}:
+        reject("physical_execution_mode_invalid")
     data = ShipmentInput.model_validate(data)
     request_hash = _digest({"organization_id": org, "document_id": source["document_id"], "data": data.model_dump(mode="json")})
     existing = await lookup(session, org, source["document_id"], data.source_key)
     if existing:
+        if _act_execution_mode(existing) != execution_mode:
+            reject("physical_request_endpoint_origin_conflict")
         if existing.request_hash != request_hash:
             reject("physical_request_conflict")
         return await act_result(session, existing)
@@ -310,6 +351,8 @@ async def create(session, org, source, data, actor):
     if not actor or len(actor) > 200 or data.operation_date > date.today():
         reject("physical_actor_or_date_invalid")
     reservation, allocations = await _locked_reservation(session, org, source)
+    if _batch_execution_mode(reservation, allocations, data) != execution_mode:
+        reject("shipment_batch_wrong_execution_mode")
     latest, state, tasks, _, before = await _remaining(session, reservation, allocations)
     physical = await physical_basis(session, org, reservation, allocations)
     if (data.expected_reservation_digest != reservation.digest or data.expected_remaining_digest != _digest(before)
@@ -349,7 +392,7 @@ async def create(session, org, source, data, actor):
     act.snapshot = {k: getattr(act, k) for k in ("organization_id", "document_id", "document_version", "content_sha256",
         "reservation_digest", "source_key", "request_hash", "actor")}
     act.snapshot.update(operation_date=data.operation_date.isoformat(), evidence=data.evidence, kind="internal_physical_shipment",
-        before=before, physical=physical, lines=rows)
+        execution_mode=execution_mode, before=before, physical=physical, lines=rows)
     act.digest = _digest(act.snapshot)
     session.add(act)
     await session.flush()
@@ -415,6 +458,23 @@ async def preview_route(org: int, document: int, data: ShipmentIdentity, session
     return await preview(session, org, facts)
 
 
+async def _document_shipment_member(core, session, org, user):
+    accounting = getattr(core.services, "accounting", None)
+    authorize = getattr(accounting, "document_shipment_member", None)
+    if not callable(authorize):
+        raise HTTPException(503, "Accounting document shipment access is unavailable")
+    return await authorize(session, org, user)
+
+
+@router.post("/organizations/{org}/invoices/{document}/document-shipments/preview")
+async def document_preview_route(org: int, document: int, data: ShipmentIdentity,
+                                 session=Depends(get_session), core: Core = Depends(get_core),
+                                 user=Depends(get_current_user)):
+    await _document_shipment_member(core, session, org, user)
+    facts = await source_facts(session, core, org, document, data, "fulfill")
+    return await preview(session, org, facts)
+
+
 @router.post("/organizations/{org}/invoices/{document}/physical-shipments", status_code=201)
 async def create_route(org: int, document: int, data: ShipmentInput, session=Depends(get_session),
                        core: Core = Depends(get_core), user=Depends(require_permission("wms.count"))):
@@ -424,12 +484,76 @@ async def create_route(org: int, document: int, data: ShipmentInput, session=Dep
     if not existing:
         await core.services.accounting.source_changed(session, org, user,
             f"wms:physical-shipment:{org}:{data.source_key}", 1, data.operation_date.isoformat())
-    result = await create(session, org, facts, data, actor)
+    result = await create(session, org, facts, data, actor, execution_mode="wms")
     if not existing:
         core.event_bus.emit(session, "wms.invoice.physical_shipped", {"organization_id": org, "document_id": document,
             "act_id": result["act_id"], "digest": result["digest"], "source_key": result["source_key"]})
     await session.commit()
     return result
+
+
+@router.post("/organizations/{org}/invoices/{document}/document-shipments", status_code=201)
+async def document_create_route(org: int, document: int, data: ShipmentInput,
+                                session=Depends(get_session), core: Core = Depends(get_core),
+                                user=Depends(get_current_user)):
+    actor = await _document_shipment_member(core, session, org, user)
+    existing = await lookup(session, org, document, data.source_key)
+    facts = await source_facts(session, core, org, document, data,
+                               "historical_claim" if existing else "fulfill")
+    if not existing:
+        await core.services.accounting.source_changed(session, org, user,
+            f"wms:physical-shipment:{org}:{data.source_key}", 1, data.operation_date.isoformat())
+    result = await create(session, org, facts, data, actor, execution_mode="document")
+    if not existing:
+        core.event_bus.emit(session, "wms.invoice.physical_shipped", {"organization_id": org,
+            "document_id": document, "act_id": result["act_id"], "digest": result["digest"],
+            "source_key": result["source_key"]})
+    await session.commit()
+    return result
+
+
+@router.get("/organizations/{org}/invoices/{document}/document-shipments/by-key/{key}")
+async def document_read_route(org: int, document: int, key: UUID, session=Depends(get_session),
+                              core: Core = Depends(get_core), user=Depends(get_current_user)):
+    try:
+        await _document_shipment_member(core, session, org, user)
+        act = await lookup(session, org, document, key)
+        if act is None or _act_execution_mode(act) != "document":
+            raise HTTPException(404, "Document shipment not found")
+        identity = ShipmentIdentity(expected_version=act.document_version,
+                                    expected_content_sha256=act.content_sha256)
+        await source_facts(session, core, org, document, identity, "historical_claim")
+        return await act_result(session, act)
+    finally:
+        await session.rollback()
+
+
+@router.post("/organizations/{org}/invoices/{document}/document-shipments/history")
+async def document_history_route(org: int, document: int, data: ShipmentHistoryInput,
+                                 session=Depends(get_session), core: Core = Depends(get_core),
+                                 user=Depends(get_current_user)):
+    try:
+        await _document_shipment_member(core, session, org, user)
+        await source_facts(session, core, org, document, data, "historical_claim")
+        rows = (await session.scalars(select(PhysicalShipmentAct).where(
+            PhysicalShipmentAct.organization_id == org,
+            PhysicalShipmentAct.document_id == document,
+            PhysicalShipmentAct.id > data.after_id,
+            PhysicalShipmentAct.snapshot["execution_mode"].as_string() == "document",
+        ).order_by(PhysicalShipmentAct.id).limit(data.limit + 1)
+            .execution_options(populate_existing=True))).all()
+        items = []
+        for row in rows[:data.limit]:
+            if row.document_version != data.expected_version or row.content_sha256 != data.expected_content_sha256:
+                reject("physical_act_original_changed")
+            items.append(await act_result(session, row))
+        return {"identity": {"organization_id": org, "document_id": document,
+                             "document_version": data.expected_version,
+                             "content_sha256": data.expected_content_sha256},
+                "items": items,
+                "next_after_id": rows[data.limit - 1].id if len(rows) > data.limit else None}
+    finally:
+        await session.rollback()
 
 
 @router.get("/organizations/{org}/invoices/{document}/physical-shipments/by-key/{key}")
