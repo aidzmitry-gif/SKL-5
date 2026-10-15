@@ -815,7 +815,7 @@ def _confirmed_inventory_source(doc):
         raise HTTPException(409, "Источник и полнота журнала не подтверждены. Создайте новый пересчёт")
 
 
-async def _physical_inventory_snapshot(session, organization_id, warehouse):
+async def _physical_inventory_snapshot(session, organization_id, warehouse, *, allow_negative=False):
     # Caller holds the same organization lock as manual movements, acceptance and task writers.
     rows = (await session.scalars(select(StockMovement).where(
         StockMovement.organization_id == organization_id, StockMovement.warehouse == warehouse,
@@ -831,7 +831,7 @@ async def _physical_inventory_snapshot(session, organization_id, warehouse):
             raise HTTPException(409, "Журнал содержит неразобранное движение. Требуется сверка")
         quantities[row.sku_code] = quantities.get(row.sku_code, Decimal("0")) + (row.qty if row.kind == "in" else -row.qty)
         identity.append([row.id, row.sku_code, row.kind, format(row.qty, ".2f"), row.reason])
-    if any(qty < 0 or qty >= Decimal("1000000000000") for qty in quantities.values()):
+    if any((qty < 0 and not allow_negative) or abs(qty) >= Decimal("1000000000000") for qty in quantities.values()):
         raise HTTPException(409, "Физический остаток требует сверки перед пересчётом")
     serialized = json.dumps([organization_id, warehouse, identity], ensure_ascii=False, separators=(",", ":"))
     return quantities, hashlib.sha256(serialized.encode()).hexdigest(), rows[-1].id
@@ -845,7 +845,7 @@ def _check_inventory_version(doc, version, cutoff):
 async def _inventory_snapshot(session, doc):
     _confirmed_inventory_source(doc)
     try:
-        quantities, version, cutoff = await _physical_inventory_snapshot(session, doc.organization_id, doc.warehouse)
+        quantities, version, cutoff = await _physical_inventory_snapshot(session, doc.organization_id, doc.warehouse, allow_negative=True)
     except HTTPException as exc:
         if exc.status_code == 409 and doc.snapshot_version is not None:
             raise HTTPException(409, "Физический журнал изменился. Создайте новый пересчёт") from exc

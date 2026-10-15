@@ -284,7 +284,7 @@ async def physical_basis(session, org, reservation, allocations):
         encoded = json.dumps([org, warehouse, identity], ensure_ascii=False, separators=(",", ":"))
         if not historic or historic[-1].id != recorded["cutoff"] or hashlib.sha256(encoded.encode()).hexdigest() != recorded["version"]:
             reject("persisted_physical_basis_changed")
-        qty, version, cutoff = await _physical_inventory_snapshot(session, org, warehouse)
+        qty, version, cutoff = await _physical_inventory_snapshot(session, org, warehouse, allow_negative=True)
         basis[warehouse] = {"quantities": {k: format(v, ".2f") for k, v in sorted(qty.items())},
                             "version": version, "cutoff": cutoff}
     return basis
@@ -304,20 +304,31 @@ async def preview(session, org, source):
     if receipt:
         released = {row["source"] for row in (await remainder_result(session, receipt))["snapshot"]["lines"]}
     lines = []
+    from modules.wms.stock_policy import policies, shortage
+    policy = await policies(session, org, {row["warehouse"] for row in allocations})
+    own = defaultdict(lambda: Decimal("0"))
+    for allocation in allocations:
+        own[(allocation["sku_code"], allocation["warehouse"])] += versions[allocation["source"]].qty
     modes = frozen_modes(reservation.execution_modes, {row["warehouse"] for row in allocations})
     for allocation in sorted(allocations, key=lambda row: (row["line_no"], row["warehouse"])):
         balance = balances.get((allocation["sku_code"], allocation["warehouse"]), {})
         remaining = versions[allocation["source"]].qty
+        group_remaining = own[(allocation["sku_code"], allocation["warehouse"])]
+        issue = shortage(allocation["sku_code"], allocation["warehouse"], group_remaining,
+                         balance.get("physical"), balance.get("reserved", "0"),
+                         own_reserved=own[(allocation["sku_code"], allocation["warehouse"])])
+        blocked_stock = issue and (policy[allocation["warehouse"]] or balance.get("physical") is None
+                                   or issue["reason"] == "reserved_by_other_documents")
         blocker = ("remainder_released" if allocation["source"] in released else
-                   "fully_shipped" if remaining == 0 else
-                   "physical_stock_unknown" if balance.get("physical") is None or balance.get("free") is None else
-                   "physical_reserves_exceed_stock" if Decimal(balance["free"]) < 0 else None)
+                   "fully_shipped" if remaining == 0 else "stock_shortage" if blocked_stock else None)
         lines.append({"line_no": allocation["line_no"], "sku_code": allocation["sku_code"],
                       "warehouse": allocation["warehouse"], "original_qty": format(_qty(allocation["qty"]), ".2f"),
                       "remaining_qty": format(remaining, ".2f"),
                       "execution_mode": "wms" if modes[allocation["warehouse"]] else "document",
                       "physical": balance.get("physical"), "reserved": balance.get("reserved"),
-                      "free": balance.get("free"), "blocking_reason": blocker})
+                      "free": balance.get("free"), "blocking_reason": blocker,
+                      "stock_issue": issue if blocker == "stock_shortage" else None,
+                      "prohibit_negative_stock": policy[allocation["warehouse"]]})
     return {"reservation_digest": reservation.digest, "remaining_digest": _digest(before),
             "physical_digest": _digest(physical), "remaining": before, "physical": physical,
             "identity": {"organization_id": org, "document_id": source["document_id"],
@@ -372,9 +383,16 @@ async def create(session, org, source, data, actor, execution_mode="wms"):
         chosen.append((allocation, prior, qty))
         totals[(allocation["sku_code"], item.warehouse)] += qty
     availability = await invoice_availability(session, org, [r[0]["sku_code"] for r in chosen])
-    for row in availability["rows"]:
-        if (row["sku_code"], row["warehouse"]) in totals and (row["physical"] is None or Decimal(row["free"]) < 0):
-            reject("physical_reserves_exceed_stock")
+    from modules.wms.stock_policy import policies, check
+    policy = await policies(session, org, {key[1] for key in totals})
+    balances = {(r["sku_code"], r["warehouse"]): r for r in availability["rows"]}
+    own = defaultdict(lambda: Decimal("0"))
+    for allocation, remaining in zip(allocations, latest, strict=True):
+        own[(allocation["sku_code"], allocation["warehouse"])] += remaining.qty
+    for (sku, warehouse), qty in totals.items():
+        row = balances.get((sku, warehouse), {})
+        check(sku, warehouse, qty, row.get("physical"), row.get("reserved", "0"),
+              policy[warehouse], own_reserved=own[(sku, warehouse)])
     act = PhysicalShipmentAct(organization_id=org, document_id=source["document_id"], document_version=source["version"],
         content_sha256=source["content_sha256"], reservation_digest=reservation.digest, source_key=str(data.source_key),
         request_hash=request_hash, operation_date=data.operation_date, actor=actor)
@@ -433,10 +451,11 @@ async def guard_free(session, org, decreases, doc_refs=()):
         return
     result = await invoice_availability(session, org, [key[0] for key in needed])
     rows = {(r["sku_code"], r["warehouse"]): r for r in result["rows"]}
+    from modules.wms.stock_policy import policies, check
+    policy = await policies(session, org, {key[1] for key in needed})
     for key, qty in needed.items():
-        row = rows.get(key)
-        if row is None or row["free"] is None or Decimal(row["free"]) < _qty(qty):
-            reject("insufficient_unreserved_physical_stock")
+        row = rows.get(key, {})
+        check(key[0], key[1], _qty(qty), row.get("physical"), row.get("reserved", "0"), policy[key[1]])
 
 
 router = APIRouter()

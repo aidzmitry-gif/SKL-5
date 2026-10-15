@@ -27,6 +27,13 @@ class WarehouseModeUpdate(BaseModel):
     wms_enabled: bool
 
 
+class WarehouseStockPolicyUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expected_prohibit_negative_stock: bool
+    prohibit_negative_stock: bool
+
+
 async def transaction(session=Depends(get_session)):
     try:
         yield session
@@ -50,6 +57,7 @@ def output(row):
     return {"id": row.id, "organization_id": row.organization_id,
             "name": row.name, "title": row.title, "is_active": row.is_active,
             "wms_enabled": row.wms_enabled,
+            "prohibit_negative_stock": row.prohibit_negative_stock,
             "created_by": row.created_by, "created_at": row.created_at}
 
 
@@ -84,6 +92,39 @@ async def create_warehouse(org_id: int, data: WarehouseCreate,
     row = WarehouseDirectory(organization_id=org_id, name=data.name, title=data.title,
                              is_active=True, created_by=actor)
     session.add(row)
+    await session.flush()
+    return output(row)
+
+
+@router.patch("/organizations/{org_id}/warehouses/{warehouse_id}/stock-policy")
+async def update_stock_policy(org_id: int, warehouse_id: int, data: WarehouseStockPolicyUpdate,
+                              session=Depends(transaction, scope="function"),
+                              core=Depends(get_core), user=Depends(require_permission("wms.count"))):
+    accounting = getattr(core.services, "accounting", None)
+    authorize = getattr(accounting, "warehouse_mode_admin", None)
+    if not callable(authorize):
+        raise HTTPException(503, "Управление настройками склада недоступно")
+    actor = await authorize(session, org_id, user)
+    row = await session.scalar(select(WarehouseDirectory).where(
+        WarehouseDirectory.id == warehouse_id,
+        WarehouseDirectory.organization_id == org_id,
+        WarehouseDirectory.is_active.is_(True),
+    ).with_for_update().execution_options(populate_existing=True))
+    if row is None:
+        raise HTTPException(404, "Активный склад не найден в этой организации")
+    if type(row.prohibit_negative_stock) is not bool:
+        raise HTTPException(409, "Настройка контроля остатков не определена; требуется проверка склада")
+    if row.prohibit_negative_stock != data.expected_prohibit_negative_stock:
+        raise HTTPException(409, "Настройка склада уже изменена. Обновите страницу")
+    if row.prohibit_negative_stock == data.prohibit_negative_stock:
+        return output(row)
+    previous = row.prohibit_negative_stock
+    row.prohibit_negative_stock = data.prohibit_negative_stock
+    core.event_bus.emit(session, "wms.warehouse.stock_policy_changed", {
+        "organization_id": org_id, "warehouse_id": row.id, "warehouse": row.name,
+        "previous_prohibit_negative_stock": previous,
+        "prohibit_negative_stock": row.prohibit_negative_stock, "actor": actor,
+    })
     await session.flush()
     return output(row)
 

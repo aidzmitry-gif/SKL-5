@@ -107,10 +107,13 @@ async def invoice_availability(session, organization_id, sku_codes):
     for row in reserved:
         totals[(row.warehouse, row.sku_code)] += _reserved_quantity(row.qty)
     rows, basis = [], {}
-    for warehouse in sorted(physical_warehouses | {row.warehouse for row in reserved}):
+    from modules.wms.stock_policy import policies
+    warehouses = physical_warehouses | {row.warehouse for row in reserved}
+    policy = await policies(session, organization_id, warehouses)
+    for warehouse in sorted(warehouses):
         quantities, version, cutoff = ({}, None, None)
         if warehouse in physical_warehouses:
-            quantities, version, cutoff = await _physical_inventory_snapshot(session, organization_id, warehouse)
+            quantities, version, cutoff = await _physical_inventory_snapshot(session, organization_id, warehouse, allow_negative=True)
         basis[warehouse] = {"version": version, "cutoff": cutoff}
         for code in sorted(codes):
             if code not in quantities and (warehouse, code) not in totals:
@@ -118,6 +121,7 @@ async def invoice_availability(session, organization_id, sku_codes):
             physical = quantities.get(code)
             held = totals[(warehouse, code)]
             rows.append({"sku_code": code, "warehouse": warehouse,
+                "prohibit_negative_stock": policy[warehouse],
                 "physical": None if physical is None else format(physical, ".2f"),
                 "reserved": format(held, ".2f"),
                 "free": None if physical is None else format(physical - held, ".2f")})
@@ -181,16 +185,23 @@ async def reserve(session, organization_id, source, data: ReserveInput, actor):
     outstanding = (await session.scalars(select(ReservationVersion).join(latest,
         (ReservationVersion.source == latest.c.source) & (ReservationVersion.version == latest.c.version)
     ).where(ReservationVersion.organization_id == organization_id))).all()
+    from modules.wms.stock_policy import policies, check
+    policy = await policies(session, organization_id, {key[0] for key in needed})
     snapshots = {}
     for warehouse in sorted({key[0] for key in needed}):
-        quantities, version, cutoff = await _physical_inventory_snapshot(session, organization_id, warehouse)
+        try:
+            quantities, version, cutoff = await _physical_inventory_snapshot(session, organization_id, warehouse, allow_negative=True)
+        except HTTPException as exc:
+            if exc.status_code == 409 and exc.detail == "Ожидаемый остаток неизвестен: нет подтверждённых физических движений":
+                sku, qty = next((sku, qty) for (place, sku), qty in needed.items() if place == warehouse)
+                check(sku, warehouse, qty, None, Decimal("0"), policy[warehouse])
+            raise
         snapshots[warehouse] = {"version": version, "cutoff": cutoff}
         for (place, sku), qty in needed.items():
             if place != warehouse:
                 continue
             used = sum(_reserved_quantity(row.qty) for row in outstanding if row.warehouse == warehouse and row.sku_code == sku)
-            if sku not in quantities or quantities[sku] - used < qty:
-                raise HTTPException(409, "Insufficient confirmed free stock for the invoice")
+            check(sku, warehouse, qty, quantities.get(sku), used, policy[warehouse])
     snapshot = {**basis, "physical_basis": snapshots}
     session.add(InvoiceReservation(document_id=source["document_id"], organization_id=organization_id,
                                    digest=digest, snapshot=snapshot,
