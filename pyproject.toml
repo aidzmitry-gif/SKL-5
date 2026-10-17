@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wms-pure-contract-tests"
+version = "0.1.0"
+description = "Standalone pure GS1 and placement-policy contract tests for the WMS module snapshot."
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=9,<10"]
+
+[tool.setuptools]
+packages = ["modules.wms"]
+package-dir = { "modules.wms" = "." }
+include-package-data = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-config", "--strict-markers"]

@@ -241,6 +241,18 @@ async def physical_basis(session, org, reservation, allocations):
         recorded = saved.get(warehouse)
         if not isinstance(recorded, dict) or type(recorded.get("cutoff")) is not int or not isinstance(recorded.get("version"), str):
             reject("persisted_physical_basis_missing")
+        if recorded["version"].startswith("erp:"):
+            from modules.wms.physical_history import history, warehouse_by_name
+            cfg = await warehouse_by_name(session, org, warehouse)
+            if cfg is None:
+                reject("erp_physical_warehouse_missing")
+            _, version, cutoff = await history(session, cfg, recorded["cutoff"])
+            if version != recorded["version"] or cutoff != recorded["cutoff"]:
+                reject("persisted_physical_basis_changed")
+            qty, version, cutoff = await _physical_inventory_snapshot(session, org, warehouse)
+            basis[warehouse] = {"quantities": {k: format(v, ".2f") for k, v in sorted(qty.items())},
+                                "version": version, "cutoff": cutoff}
+            continue
         historic = (await session.scalars(select(StockMovement).where(StockMovement.organization_id == org,
             StockMovement.warehouse == warehouse, StockMovement.id <= recorded["cutoff"],
             StockMovement.reason.not_in(["reserve", "release"])).order_by(StockMovement.id)
@@ -255,13 +267,13 @@ async def physical_basis(session, org, reservation, allocations):
     return basis
 
 
-async def preview(session, org, source):
+async def preview(session, org, source, reference=None):
     from modules.wms.invoice_remainder import RemainderRelease
     from modules.wms.invoice_remainder import result as remainder_result
     reservation, allocations = await _locked_reservation(session, org, source)
     latest, *_, before = await _remaining(session, reservation, allocations)
     physical = await physical_basis(session, org, reservation, allocations)
-    availability = await invoice_availability(session, org, sorted({row["sku_code"] for row in allocations}))
+    availability = await invoice_availability(session, org, sorted({row["sku_code"] for row in allocations}), reference=reference)
     balances = {(row["sku_code"], row["warehouse"]): row for row in availability["rows"]}
     versions = {row.source: row for row in latest}
     receipt = await session.scalar(select(RemainderRelease).where(RemainderRelease.document_id == source["document_id"]))
@@ -296,7 +308,7 @@ async def lookup(session, org, document_id, key):
     return act
 
 
-async def create(session, org, source, data, actor):
+async def create(session, org, source, data, actor, reference=None, erp_execution_id=None):
     """Internal authorized facade. Fresh source_changed is caller's responsibility."""
     data = ShipmentInput.model_validate(data)
     request_hash = _digest({"organization_id": org, "document_id": source["document_id"], "data": data.model_dump(mode="json")})
@@ -310,6 +322,11 @@ async def create(session, org, source, data, actor):
     if not actor or len(actor) > 200 or data.operation_date > date.today():
         reject("physical_actor_or_date_invalid")
     reservation, allocations = await _locked_reservation(session, org, source)
+    from modules.wms.physical_history import warehouse_by_name
+    if erp_execution_id is None:
+        for allocation in allocations:
+            if await warehouse_by_name(session, org, allocation["warehouse"]):
+                reject("Подбор и отгрузка переключённого склада выполняются через ТСД")
     latest, state, tasks, _, before = await _remaining(session, reservation, allocations)
     physical = await physical_basis(session, org, reservation, allocations)
     if (data.expected_reservation_digest != reservation.digest or data.expected_remaining_digest != _digest(before)
@@ -328,7 +345,7 @@ async def create(session, org, source, data, actor):
             reject("physical_quantity_exceeds_reserve")
         chosen.append((allocation, prior, qty))
         totals[(allocation["sku_code"], item.warehouse)] += qty
-    availability = await invoice_availability(session, org, [r[0]["sku_code"] for r in chosen])
+    availability = await invoice_availability(session, org, [r[0]["sku_code"] for r in chosen], reference=reference)
     for row in availability["rows"]:
         if (row["sku_code"], row["warehouse"]) in totals and (row["physical"] is None or Decimal(row["free"]) < 0):
             reject("physical_reserves_exceed_stock")
@@ -412,7 +429,7 @@ async def preview_route(org: int, document: int, data: ShipmentIdentity, session
                         core: Core = Depends(get_core), user=Depends(require_permission("wms.count"))):
     await core.services.accounting.source_member(session, org, user)
     facts = await source_facts(session, core, org, document, data, "fulfill")
-    return await preview(session, org, facts)
+    return await preview(session, org, facts, reference=core.services.stock)
 
 
 @router.post("/organizations/{org}/invoices/{document}/physical-shipments", status_code=201)
@@ -424,7 +441,7 @@ async def create_route(org: int, document: int, data: ShipmentInput, session=Dep
     if not existing:
         await core.services.accounting.source_changed(session, org, user,
             f"wms:physical-shipment:{org}:{data.source_key}", 1, data.operation_date.isoformat())
-    result = await create(session, org, facts, data, actor)
+    result = await create(session, org, facts, data, actor, reference=core.services.stock)
     if not existing:
         core.event_bus.emit(session, "wms.invoice.physical_shipped", {"organization_id": org, "document_id": document,
             "act_id": result["act_id"], "digest": result["digest"], "source_key": result["source_key"]})

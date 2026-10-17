@@ -10,7 +10,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import (
     JSON,
     CheckConstraint,
@@ -62,6 +62,10 @@ class Allocation(BaseModel):
     line_no: int = Field(gt=0, strict=True)
     warehouse: str = Field(min_length=1, max_length=128)
     qty: Decimal = Field(gt=0, max_digits=14, decimal_places=2, allow_inf_nan=False)
+    min_shelf_days: int = Field(default=0, ge=0, strict=True)
+    characteristic: str = Field(default="", max_length=128)
+    purpose: str = Field(default="", max_length=128)
+    due_at: AwareDatetime | None = None
 
     @field_validator("qty", mode="before")
     @classmethod
@@ -85,7 +89,7 @@ def _reserved_quantity(value):
     return value
 
 
-async def invoice_availability(session, organization_id, sku_codes):
+async def invoice_availability(session, organization_id, sku_codes, reference=None):
     """One organization-locked observation; reserve rechecks before committing."""
     from modules.wms.routes import _physical_inventory_snapshot
 
@@ -105,9 +109,16 @@ async def invoice_availability(session, organization_id, sku_codes):
     for row in reserved:
         totals[(row.warehouse, row.sku_code)] += _reserved_quantity(row.qty)
     rows, basis = [], {}
-    for warehouse in sorted(physical_warehouses | {row.warehouse for row in reserved}):
+    from modules.wms.models import WarehouseDirectory
+    from modules.wms.physical_models import PhysicalLocation, StockUnit, WarehouseControl
+    from modules.wms.physical_stock import decimal_text, eligible, pending_move_qty
+    erp_warehouses = (await session.execute(select(WarehouseControl, WarehouseDirectory.name).join(WarehouseDirectory,
+        WarehouseDirectory.id == WarehouseControl.warehouse_id).where(WarehouseControl.organization_id == organization_id,
+        WarehouseControl.mode == "erp"))).all()
+    erp = {name: cfg for cfg, name in erp_warehouses}
+    for warehouse in sorted(physical_warehouses | {row.warehouse for row in reserved} | set(erp)):
         quantities, version, cutoff = ({}, None, None)
-        if warehouse in physical_warehouses:
+        if warehouse in physical_warehouses or warehouse in erp:
             quantities, version, cutoff = await _physical_inventory_snapshot(session, organization_id, warehouse)
         basis[warehouse] = {"version": version, "cutoff": cutoff}
         for code in sorted(codes):
@@ -115,6 +126,22 @@ async def invoice_availability(session, organization_id, sku_codes):
                 continue
             physical = quantities.get(code)
             held = totals[(warehouse, code)]
+            if warehouse in erp:
+                units = (await session.execute(select(StockUnit, PhysicalLocation.kind).join(PhysicalLocation,
+                    StockUnit.location_id == PhysicalLocation.location_id).where(StockUnit.warehouse_id == erp[warehouse].warehouse_id,
+                    StockUnit.sku_code == code))).all()
+                held = sum((unit.reserved for unit, _ in units), Decimal(0))
+                free = Decimal(0)
+                if reference is None:
+                    raise HTTPException(503, "Canonical stock gateway is required for ERP availability")
+                for unit, kind in units:
+                    reason, _ = await eligible(session, reference, erp[warehouse], unit)
+                    if not reason and kind in {"storage", "pick"}:
+                        free += max(Decimal(0), unit.qty - unit.reserved - await pending_move_qty(session, unit.id))
+                rows.append({"sku_code": code, "warehouse": warehouse, "warehouse_id": erp[warehouse].warehouse_id,
+                    "physical": decimal_text(physical) if physical is not None else "0",
+                    "reserved": decimal_text(held), "free": decimal_text(free)})
+                continue
             rows.append({"sku_code": code, "warehouse": warehouse,
                 "physical": None if physical is None else format(physical, ".2f"),
                 "reserved": format(held, ".2f"),
@@ -123,7 +150,7 @@ async def invoice_availability(session, organization_id, sku_codes):
             "basis_by_warehouse": basis}
 
 
-async def reserve(session, organization_id, source, data: ReserveInput, actor):
+async def reserve(session, organization_id, source, data: ReserveInput, actor, reference=None):
     """Reserve all original goods lines atomically; never commits or moves stock.
 
     Caller must hold the accounting organization lock followed by the sales
@@ -148,6 +175,14 @@ async def reserve(session, organization_id, source, data: ReserveInput, actor):
         rows.append({"line_no": allocation.line_no, "sku_code": line["sku_code"],
                      "warehouse": allocation.warehouse, "qty": format(allocation.qty, ".2f"),
                      "source": f"invoice:{source['document_id']}:{allocation.line_no}:{warehouse_key}"})
+        if allocation.min_shelf_days:
+            rows[-1]["min_shelf_days"] = allocation.min_shelf_days
+        if allocation.characteristic:
+            rows[-1]["characteristic"] = allocation.characteristic
+        if allocation.purpose:
+            rows[-1]["purpose"] = allocation.purpose
+        if allocation.due_at:
+            rows[-1]["due_at"] = allocation.due_at.isoformat()
     if any(totals[line_no] != Decimal(line["qty"]) for line_no, line in original.items()):
         raise HTTPException(409, "Allocations must match each original invoice line exactly")
     basis = {"document_id": source["document_id"], "organization_id": organization_id,
@@ -184,6 +219,17 @@ async def reserve(session, organization_id, source, data: ReserveInput, actor):
     session.add(InvoiceReservation(document_id=source["document_id"], organization_id=organization_id,
                                    digest=digest, snapshot=snapshot, actor=actor))
     for row in rows:
+        from modules.wms.physical_history import warehouse_by_name
+        from modules.wms.physical_stock import allocate
+        physical = await warehouse_by_name(session, organization_id, row["warehouse"])
+        if physical:
+            if reference is None:
+                raise HTTPException(503, "Canonical stock gateway is required for ERP lot allocation")
+            await allocate(session, reference, physical, row["sku_code"], Decimal(row["qty"]), row["source"],
+                f"INV-{source['document_id']}", characteristic=row.get("characteristic", ""), purpose=row.get("purpose", ""),
+                shelf_days=row.get("min_shelf_days", 0),
+                due_at=datetime.fromisoformat(row["due_at"]) if row.get("due_at") else None,
+                order_ref=f"invoice:{source['document_id']}")
         session.add(ReservationVersion(organization_id=organization_id, source=row["source"], version=1,
             sku_code=row["sku_code"], warehouse=row["warehouse"], qty=Decimal(row["qty"]),
             evidence=data.evidence, actor=actor))
@@ -545,4 +591,6 @@ async def release(session, organization_id, source, data: ReleaseInput, actor,
             after_id=line["after_id"], source=line["source"], line_no=line["line_no"],
             released_qty=Decimal(line["released_qty"])))
     await session.flush()
+    from modules.wms.physical_verified_release import release_verified_sources
+    await release_verified_sources(session, organization_id, f"cancel:{record.source_key}", line_snapshots, actor)
     return await _release_result(session, record, allocations)

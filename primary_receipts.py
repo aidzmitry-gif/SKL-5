@@ -22,6 +22,7 @@ from config.access import is_package_allowed
 from core.db.base import Base
 from core.domain.models import OutboxEvent, Sku
 from modules.wms.models import Receipt, ReceiptLine, WarehouseDirectory
+from modules.wms.physical_models import WarehouseControl
 
 
 class PhysicalLine(BaseModel):
@@ -78,8 +79,21 @@ event.listen(PrimaryReceiptBinding, "before_update", immutable)
 event.listen(PrimaryReceiptBinding, "before_delete", immutable)
 
 
+async def _reject_native_legacy_receipt(session, organization_id, warehouse_name):
+    query = select(WarehouseControl.warehouse_id).join(
+        WarehouseDirectory, WarehouseDirectory.id == WarehouseControl.warehouse_id,
+    ).where(WarehouseDirectory.name == warehouse_name, WarehouseControl.onec_ref.is_(None),
+        WarehouseControl.mode.in_(["preparing", "erp"]))
+    if organization_id is not None:
+        query = query.where(WarehouseControl.organization_id == organization_id)
+    native = await session.scalar(query.limit(1))
+    if native is not None:
+        raise HTTPException(409, "Native warehouse receipts must use a typed physical operation")
+
+
 async def validate_primary_acceptance(session, core, receipt, lines):
     """Recheck bound facts under the caller's organization/receipt locks before stock."""
+    await _reject_native_legacy_receipt(session, receipt.organization_id, receipt.warehouse)
     source_event = await session.get(OutboxEvent, receipt.source_event_id) if receipt.source_event_id is not None else None
     if (source_event is not None and source_event.event_type == "production.output.confirmed"
             or (receipt.entity_ref or "").startswith("production_output:")):
@@ -179,7 +193,13 @@ async def create_from_primary(session, core, user, organization_id, source_recei
     ).with_for_update(read=True))
     if warehouse is None:
         raise ValueError("Physical warehouse catalogue selection changed; select it again")
+    await _reject_native_legacy_receipt(session, organization_id, warehouse.name)
     source = await procurement.warehouse_receipt_source(session, organization_id, source_receipt_id, command.expected_version)
+    from modules.wms.physical_stock import PhysicalStock
+
+    history = await PhysicalStock(core.services.stock, services=core.services)._native_receipt_history(
+        session, organization_id, source, legacy_caller=True,
+    )
     existing = (await session.scalars(select(PrimaryReceiptBinding).where(
         PrimaryReceiptBinding.organization_id == organization_id,
         PrimaryReceiptBinding.source_receipt_id == source_receipt_id,
@@ -193,6 +213,9 @@ async def create_from_primary(session, core, user, organization_id, source_recei
             position = line["position"]
             allocated[position] = allocated.get(position, Decimal(0)) + Decimal(line["quantity"])
             mapping[position] = line["sku_code"]
+    if history["has_native_for_source"]:
+        # The shared view already includes legacy bindings: replace, never add twice.
+        allocated = history["allocated"]
     prepared = []
     for selected in command.lines:
         if selected.position > len(source["lines"]):
@@ -205,6 +228,11 @@ async def create_from_primary(session, core, user, organization_id, source_recei
         sku = await session.scalar(select(Sku).where(Sku.code == selected.sku_code).with_for_update())
         if sku is None or sku.unit != fact["unit"]:
             raise ValueError("Select an existing warehouse SKU with the exact primary unit")
+        if history["has_native_for_source"]:
+            pinned = history["owners"][(source_receipt_id, command.expected_version)]["lines"][selected.position - 1]
+            if (sku.id != pinned["sku_id"] or sku.code != pinned["sku"]
+                    or sku.unit != pinned["unit"] or fact["lot"] != pinned["lot"]):
+                raise ValueError("Mixed receipt requires the exact native source SKU, unit and lot")
         if len(fact["lot"]) > 64:
             raise ValueError("Primary lot exceeds physical receipt storage; explicit mapping required")
         prepared.append((selected, fact, sku))

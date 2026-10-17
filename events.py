@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from decimal import Decimal, InvalidOperation
 
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from core.domain.models import OutboxEvent, Sku
@@ -194,6 +195,12 @@ async def on_goods_received(payload: dict, ctx) -> None:
             await gateway.validate_delivery(ctx.session, event_id, payload)
         if await ctx.session.scalar(select(Receipt.id).where(Receipt.source_event_id == event_id)) is not None:
             return
+    from modules.wms.primary_receipts import _reject_native_legacy_receipt
+
+    try:
+        await _reject_native_legacy_receipt(ctx.session, organization_id, warehouse)
+    except HTTPException as exc:
+        raise ValueError("Native or preparing warehouse receipts require typed physical intake") from exc
     # ponytail: источник по префиксу entity_ref (purchase→procurement, прочее→production);
     # точный источник лучше передавать в payload, когда у событий появится поле source.
     source = "procurement" if entity_ref.startswith("purchase") else "production"

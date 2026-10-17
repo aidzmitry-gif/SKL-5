@@ -201,6 +201,11 @@ async def release(session, org, source, data, actor):
     await session.flush()
     session.add_all([RemainderReleaseLine(release_id=receipt.id, **line) for line in lines])
     await session.flush()
+    from modules.wms.physical_verified_release import release_verified_sources
+    addresses = {line["source"]: line for line in allocations}
+    await release_verified_sources(session, org, f"remainder:{receipt.source_key}",
+        [{"source": line["source"], "warehouse": addresses[line["source"]]["warehouse"],
+            "released_qty": line["qty"]} for line in lines], actor)
     return await result(session, receipt)
 
 

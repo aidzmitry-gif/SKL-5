@@ -24,7 +24,8 @@ from core.db.base import Base
 from modules.production.accounting_ownership import ProductionOrderOwnership, order_snapshot
 from modules.production.models import ProductionOrder
 from modules.wms.invoice_shipments import guard_free
-from modules.wms.models import Location, StockMovement
+from modules.wms.models import Location, StockMovement, WarehouseDirectory
+from modules.wms.physical_models import WarehouseControl
 
 
 class ProductionMaterialIssueCommand(BaseModel):
@@ -144,6 +145,23 @@ async def record_material_issue(session, gateway, organization_id: int, user,
         return existing, movement
 
     _, snapshot = await _owned_order(session, organization_id, command)
+    from modules.production.assembly_specifications import AssemblySpecification
+    from modules.wms.physical_models import AssemblyExecution
+
+    assembly_spec = await session.scalar(select(AssemblySpecification.id).where(
+        AssemblySpecification.organization_id == organization_id,
+        AssemblySpecification.order_id == command.order_id).limit(1))
+    assembly_execution = await session.scalar(select(AssemblyExecution.id).where(
+        AssemblyExecution.organization_id == organization_id,
+        AssemblyExecution.order_id == command.order_id).limit(1))
+    if assembly_spec is not None or assembly_execution is not None:
+        raise HTTPException(409, "Assembly orders require typed physical component operations")
+    native = await session.scalar(select(WarehouseControl.warehouse_id).join(
+        WarehouseDirectory, WarehouseDirectory.id == WarehouseControl.warehouse_id,
+    ).where(WarehouseControl.organization_id == organization_id,
+        WarehouseDirectory.name == command.warehouse, WarehouseControl.onec_ref.is_(None)).limit(1))
+    if native is not None:
+        raise HTTPException(409, "Native assembly components must use typed physical assembly commands")
     await guard_free(session, organization_id, {(command.sku_code, command.warehouse): command.quantity})
     if command.location_id is not None:
         location = await session.scalar(select(Location).where(Location.id == command.location_id).with_for_update())

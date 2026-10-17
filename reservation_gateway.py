@@ -10,6 +10,8 @@ from modules.wms.invoice_reservations import (
 
 
 class WmsReservationService:
+    def __init__(self, stock=None):
+        self.stock = stock
     async def invoice_remainder_preview(self, session, organization_id, source):
         from modules.wms.invoice_remainder import preview
         return await preview(session, organization_id, source)
@@ -104,11 +106,11 @@ class WmsReservationService:
         return await invoice_fulfillment_snapshot(session, organization_id, source)
 
     async def invoice_availability(self, session, organization_id, sku_codes):
-        return await invoice_availability(session, organization_id, sku_codes)
+        return await invoice_availability(session, organization_id, sku_codes, reference=self.stock)
 
     async def reserve_invoice(self, session, organization_id, source, request, actor):
         return await reserve(session, organization_id, source,
-                             ReserveInput.model_validate(request), actor)
+                             ReserveInput.model_validate(request), actor, reference=self.stock)
 
     async def invoice_release_preview(self, session, organization_id, source):
         return await release_preview(session, organization_id, source)
@@ -141,11 +143,11 @@ class WmsReservationService:
 
     async def invoice_shipment_preview(self, session, organization_id, source):
         from modules.wms.invoice_shipments import preview
-        return await preview(session, organization_id, source)
+        return await preview(session, organization_id, source, reference=self.stock)
 
     async def create_invoice_shipment(self, session, organization_id, source, request, actor):
         from modules.wms.invoice_shipments import create
-        return await create(session, organization_id, source, request, actor)
+        return await create(session, organization_id, source, request, actor, reference=self.stock)
 
     async def invoice_shipment_by_key(self, session, organization_id, document_id, key):
         from modules.wms.invoice_shipments import act_result, lookup

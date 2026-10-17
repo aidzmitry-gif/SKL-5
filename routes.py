@@ -834,6 +834,10 @@ def _confirmed_inventory_source(doc):
 
 
 async def _physical_inventory_snapshot(session, organization_id, warehouse):
+    from modules.wms.physical_history import snapshot, warehouse_by_name
+    physical = await warehouse_by_name(session, organization_id, warehouse)
+    if physical:
+        return await snapshot(session, physical)
     # Caller holds the same organization lock as manual movements, acceptance and task writers.
     rows = (await session.scalars(select(StockMovement).where(
         StockMovement.organization_id == organization_id, StockMovement.warehouse == warehouse,

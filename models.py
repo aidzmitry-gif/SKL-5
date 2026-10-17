@@ -20,6 +20,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from core.db.base import Base
 
+# Keep module metadata discoverable by Alembic and the SQLite fixtures.
+from modules.wms import physical_models as physical_models  # noqa: F401
+
 
 class StockMovement(Base):
     """Движение по складу: приход/расход SKU (операционный журнал WMS).
@@ -58,6 +61,7 @@ class WarehouseDirectory(Base):
     __table_args__ = (
         CheckConstraint("organization_id > 0", name="wms_warehouse_directory_org_positive"),
         UniqueConstraint("organization_id", "name", name="uq_wms_warehouse_directory_name"),
+        UniqueConstraint("organization_id", "id", name="cap_warehouse_directory_org_id"),
         {"schema": "wms"},
     )
 
