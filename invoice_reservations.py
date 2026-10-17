@@ -185,7 +185,7 @@ async def reserve(session, organization_id, source, data: ReserveInput, actor):
     outstanding = (await session.scalars(select(ReservationVersion).join(latest,
         (ReservationVersion.source == latest.c.source) & (ReservationVersion.version == latest.c.version)
     ).where(ReservationVersion.organization_id == organization_id))).all()
-    from modules.wms.stock_policy import policies, check
+    from modules.wms.stock_policy import check, policies
     policy = await policies(session, organization_id, {key[0] for key in needed})
     snapshots = {}
     for warehouse in sorted({key[0] for key in needed}):
