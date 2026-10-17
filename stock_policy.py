@@ -29,7 +29,10 @@ def shortage(sku, warehouse, requested, physical, reserved, *, own_reserved=Deci
     available = None if physical is None else Decimal(physical) - other
     if available is not None and available >= requested:
         return None
-    fmt = lambda value: None if value is None else format(value, ".2f")
+
+    def fmt(value):
+        return None if value is None else format(value, ".2f")
+
     if available is None:
         reason = "unknown_stock"
         message = "Остаток не определён. Подтвердите приход или начальные остатки и проверьте складской журнал."
