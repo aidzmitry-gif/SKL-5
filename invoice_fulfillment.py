@@ -5,16 +5,67 @@ Legacy coverage belongs to the encompassing Sales review, not this collector.
 """
 from copy import deepcopy
 
-from sqlalchemy import select
+from fastapi import HTTPException
+from sqlalchemy import or_, select
 
 from modules.wms.invoice_reservations import (
+    InvoiceReservation,
+    InvoiceReservationRelease,
     _digest,
     _locked_reservation,
     _remaining,
     release_preview,
 )
 from modules.wms.invoice_shipments import PhysicalShipmentAct, act_result, physical_basis
-from modules.wms.models import ReservationVersion, StockMovement
+from modules.wms.models import ReservationVersion, StockMovement, Task
+from modules.wms.reservation_events import ReservationEventState, ReservationPick
+
+
+def unreserved_snapshot(connection, organization_id, source):
+    """Observe addressed local absence; never certify external completeness.
+
+    Sales supplies an exact verified initial on-order original. Caller retains
+    org/deal/document locks. Any trace, even foreign or orphaned, requires review.
+    """
+    document_id = source.get("document_id")
+    anchor = source.get("issuance_receipt")
+    if (type(document_id) is not int or document_id <= 0
+            or source.get("organization_id") != organization_id
+            or source.get("reserve_mode") != "on_order" or source.get("reserve_status") != "unreserved"
+            or source.get("operation") != "cancellation" or source.get("fulfillment_allowed") is not False
+            or source.get("allocations") != [] or "reservation_digest" not in source
+            or source["reservation_digest"] is not None
+            or not isinstance(anchor, dict) or anchor.get("document_id") != document_id):
+        raise HTTPException(409, "Unreserved invoice source requires reconciliation")
+    reference = f"sales:document:{document_id}"
+    checks = (
+        ("reservation", InvoiceReservation.document_id, InvoiceReservation.document_id == document_id),
+        ("versions", ReservationVersion.id, ReservationVersion.source.startswith(f"invoice:{document_id}:")),
+        ("event_state", ReservationEventState.document_id, ReservationEventState.document_id == document_id),
+        ("pick_links", ReservationPick.task_id, ReservationPick.document_id == document_id),
+        ("picks", Task.id, Task.doc_ref == reference),
+        ("acts", PhysicalShipmentAct.id, PhysicalShipmentAct.document_id == document_id),
+        ("releases", InvoiceReservationRelease.id, InvoiceReservationRelease.document_id == document_id),
+        ("movements", StockMovement.id, or_(StockMovement.doc_ref == reference,
+                                          StockMovement.doc_ref.startswith(f"invoice:{document_id}:"))),
+    )
+    for name, key, predicate in checks:
+        if connection.execute(select(key).where(predicate).limit(1)).scalar() is not None:
+            raise HTTPException(409, {"code": "unreserved_invoice_has_wms_history", "scope": name})
+    identity = {"organization_id": organization_id, "document_id": document_id,
+                "document_version": source["version"], "content_sha256": source["content_sha256"],
+                "reservation_digest": None, "issuance_receipt": anchor}
+    result = {"schema_version": 1, "identity": identity, "observed_state": "no_shipment",
+        "coverage_complete": False, "snapshot": {
+            "reservation": None, "versions": [], "event_state": None, "picks": [],
+            "acts": [], "movements": [], "physical_basis": None,
+            "remaining": {"reservation_absent": True, "checked_scopes": [name for name, _, _ in checks]},
+        }}
+    return deepcopy({**result, "digest": _digest(result)})
+
+
+async def _unreserved_snapshot(session, organization_id, source):
+    return await session.run_sync(lambda sync: unreserved_snapshot(sync.connection(), organization_id, source))
 
 
 async def invoice_fulfillment_snapshot(session, organization_id, source):
@@ -24,6 +75,8 @@ async def invoice_fulfillment_snapshot(session, organization_id, source):
     A caller must treat an exception as unresolved, never as an empty scope.
     This function neither commits nor creates evidence registry records.
     """
+    if source.get("operation") == "cancellation" and source.get("reserve_status") == "unreserved":
+        return await _unreserved_snapshot(session, organization_id, source)
     reservation, allocations = await _locked_reservation(session, organization_id, source)
     *_, tasks, quantities, remaining = await _remaining(session, reservation, allocations)
     basis = await physical_basis(session, organization_id, reservation, allocations)
