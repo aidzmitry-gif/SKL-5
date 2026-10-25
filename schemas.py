@@ -404,15 +404,19 @@ class ReconRow(BaseModel):
     title: str
     warehouse: str
     wms_qty: float  # оперативный остаток WMS (из движений)
-    onec_qty: float  # зеркало 1С (qty_available)
-    diff: float  # wms − onec
+    onec_qty: float | None  # None until the company's source is qualified
+    diff: float | None  # wms − onec, unknown without a qualified source
     diff_value: float | None  # diff × себес из 1С (деньги); None без себеса
 
 
 class ReconOut(BaseModel):
+    organization_id: int
     rows: list[ReconRow]  # сорт. по |diff_value| убыв. (где деньги расходятся — сверху)
     gateway: bool  # шлюз 1С подключён; False → источник не доступен
-    total_abs_diff_value: float  # суммарное расхождение в деньгах (по модулю)
+    total_abs_diff_value: float | None
+    source_unavailable_reason: Literal[
+        "organization_stock_source_unverified", "stock_gateway_unavailable"
+    ] | None
 
 
 # --- Low-stock пороги и алерты ---

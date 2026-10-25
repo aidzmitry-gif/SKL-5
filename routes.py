@@ -1585,63 +1585,55 @@ async def pack(
 
 @router.get("/reconciliation", response_model=ReconOut)
 async def reconciliation(
+    organization_id: int = Query(..., gt=0),
     warehouse: str | None = None,
     session: AsyncSession = Depends(get_session),
     core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.read")),
 ) -> ReconOut:
-    """Сверка: оперативный остаток WMS (in−out по складу) ПРОТИВ зеркала 1С (qty_available).
+    """Company movement quantities; comparison awaits a qualified company source.
 
-    diff = wms − onec; diff_value = diff × себес из 1С. Строки сортируются по |diff_value|
-    убыв. (где деньги расходятся — сверху). 1С = истина: расхождение — СИГНАЛ к разбору,
-    в 1С ничего не пишем.
-    # ponytail: N+1 по шлюзу (один вызов на SKU); bulk-чтение остатков на StockGateway —
-    # согласовать с СИНК, когда номенклатура вырастет.
+    The legacy stock gateway has no organization or source provenance. Never use
+    its rows as this company's 1C balances, or interpret unavailable values as zero.
     """
-    gw = core.services.stock
-    if gw is None:
-        return ReconOut(rows=[], gateway=False, total_abs_diff_value=0.0)
-
+    await visible_organization_ids(session, core, _, organization_id)
     signed = case((StockMovement.kind == "in", StockMovement.qty), else_=-StockMovement.qty)
     stmt = select(
         StockMovement.sku_code, StockMovement.warehouse, func.coalesce(func.sum(signed), 0)
-    ).group_by(StockMovement.sku_code, StockMovement.warehouse)
+    ).where(StockMovement.organization_id == organization_id).group_by(
+        StockMovement.sku_code, StockMovement.warehouse
+    )
     if warehouse:
         stmt = stmt.where(StockMovement.warehouse == warehouse)
     wms = {(code, wh): float(q) for code, wh, q in (await session.execute(stmt)).all()}
 
+    names = {warehouse} if warehouse is not None else {wh for _, wh in wms}
+    if names:
+        try:
+            await current_modes(session, organization_id, names, lock=False)
+        except ValueError:
+            raise HTTPException(409, "Склад не подтверждён для этой организации или неактивен") from None
     codes = {code for code, _ in wms}
-    onec: dict[tuple[str, str], tuple[float, float | None]] = {}
-    for code in codes:
-        data = await gw.stock_by_sku(session, code)
-        if not data:
-            continue
-        for r in data["rows"]:
-            if warehouse and r["warehouse"] != warehouse:
-                continue
-            onec[(code, r["warehouse"])] = (r["qty_available"], r["cost"])
-
     titles = (
         dict((await session.execute(select(Sku.code, Sku.title).where(Sku.code.in_(codes)))).all())
         if codes
         else {}
     )
     rows: list[ReconRow] = []
-    for key in set(wms) | set(onec):
-        code, wh = key
-        wq = wms.get(key, 0.0)
-        oq, cost = onec.get(key, (0.0, None))
-        diff = round(wq - oq, 2)
+    for code, wh in sorted(wms):
         rows.append(
             ReconRow(
                 sku_code=code, title=titles.get(code, ""), warehouse=wh,
-                wms_qty=wq, onec_qty=oq, diff=diff,
-                diff_value=round(diff * cost, 2) if cost is not None else None,
+                wms_qty=wms[(code, wh)], onec_qty=None, diff=None, diff_value=None,
             )
         )
-    rows.sort(key=lambda r: abs(r.diff_value or 0), reverse=True)
-    total = round(sum(abs(r.diff_value) for r in rows if r.diff_value is not None), 2)
-    return ReconOut(rows=rows, gateway=True, total_abs_diff_value=total)
+    return ReconOut(
+        organization_id=organization_id, rows=rows, gateway=False, total_abs_diff_value=None,
+        source_unavailable_reason=(
+            "stock_gateway_unavailable" if core.services.stock is None
+            else "organization_stock_source_unverified"
+        ),
+    )
 
 
 # --- Low-stock: пороги дефицита и алерты «нужно дозаказать» (деньго-защита) ---
