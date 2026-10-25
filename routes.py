@@ -143,6 +143,10 @@ async def create_movement(
     # never be presented as a substitute for an incoming invoice.
     if payload.kind == "in" and payload.reason == "receipt":
         raise HTTPException(409, "Supplier receipts are created in Procurement; prepare warehouse QC from the primary receipt")
+    try:
+        await current_modes(session, payload.organization_id, {payload.warehouse}, lock=True)
+    except ValueError as exc:
+        raise HTTPException(409, "Склад неизвестен, неактивен или недоступен в этой организации") from exc
     await _validate_movement_locations(session, payload.warehouse, payload.location_id)
     from modules.wms.invoice_shipments import guard_free
     await guard_free(session, payload.organization_id, {(payload.sku_code, payload.warehouse): Decimal(str(payload.qty)) if payload.kind == "out" else Decimal("0")}, [payload.doc_ref])
@@ -193,6 +197,10 @@ async def shipment(
     во все три ключа. Без ``doc_ref`` событие НЕ эмитим: офис не сможет сопоставить документ.
     """
     await visible_organization_ids(session, core, _, payload.organization_id)
+    try:
+        await current_modes(session, payload.organization_id, {payload.warehouse}, lock=True)
+    except ValueError as exc:
+        raise HTTPException(409, "Склад неизвестен, неактивен или недоступен в этой организации") from exc
     await _validate_movement_locations(session, payload.warehouse, payload.location_id)
     from modules.wms.invoice_shipments import guard_free
     await guard_free(session, payload.organization_id, {(payload.sku_code, payload.warehouse): Decimal(str(payload.qty))}, [payload.doc_ref])
@@ -236,6 +244,10 @@ async def transfer(
 ) -> list[StockMovement]:
     """Перемещение: пара движений out@from + in@to, связанных одним doc_ref (TRF-…)."""
     await visible_organization_ids(session, core, _, payload.organization_id)
+    try:
+        await current_modes(session, payload.organization_id, {payload.warehouse}, lock=True)
+    except ValueError as exc:
+        raise HTTPException(409, "Склад неизвестен, неактивен или недоступен в этой организации") from exc
     await _validate_movement_locations(session, payload.warehouse, payload.from_location_id, payload.to_location_id)
     qty = Decimal(str(payload.qty))
     if qty <= 0:
@@ -277,6 +289,10 @@ async def adjustment(
     Правит только теневой журнал WMS — остатки 1С не меняются (1С = истина, фаза 1).
     """
     await visible_organization_ids(session, core, _, payload.organization_id)
+    try:
+        await current_modes(session, payload.organization_id, {payload.warehouse}, lock=True)
+    except ValueError as exc:
+        raise HTTPException(409, "Склад неизвестен, неактивен или недоступен в этой организации") from exc
     await _validate_movement_locations(session, payload.warehouse, payload.location_id)
     qty = Decimal(str(payload.qty))
     if qty == 0:
@@ -1873,62 +1889,41 @@ async def run_cycle_plan(
 
 @router.get("/dashboard", response_model=DashboardOut)
 async def dashboard(
+    organization_id: int = Query(gt=0),
     session: AsyncSession = Depends(get_session),
     core: Core = Depends(get_core),
     _: object = Depends(require_permission("wms.read")),
 ) -> DashboardOut:
-    """Сводка одним набором запросов: очередь QC, открытые задачи/инвентаризации, low-stock,
-    последняя сверка с 1С (макс/сумма расхождения в деньгах), движения за сегодня."""
-    async def _count(model, *conds) -> int:
-        stmt = select(func.count()).select_from(model)
-        for c in conds:
-            stmt = stmt.where(c)
-        return int((await session.execute(stmt)).scalar() or 0)
+    """Confirmed company records; dates refer to the stored journal, not a business close."""
+    await visible_organization_ids(session, core, _, organization_id)
 
-    pending_qc = await _count(Receipt, Receipt.status == "pending_qc")
-    putaway_open = await _count(Task, Task.kind == "putaway", Task.status.in_(("open", "in_progress")))
-    pick_open = await _count(Task, Task.kind == "pick", Task.status.in_(("open", "in_progress")))
-    inv_open = await _count(InventoryCount, InventoryCount.status == "open")
+    async def count(model, *conditions) -> int:
+        statement = select(func.count()).select_from(model).where(
+            model.organization_id == organization_id, *conditions,
+        )
+        return int((await session.execute(statement)).scalar_one())
 
-    # 1С-зависимые метрики — переиспользуем готовую логику (gateway внутри)
-    gw = core.services.stock
-    deficits = await _deficit_rows(session, gw) if gw is not None else []
-    alerts_deficit_value = round(
-        sum(d.deficit * d.unit_cost for d in deficits if d.unit_cost is not None), 2
-    )
-    _, inventory_value, _ = await _valued_rows(session, core)
-    rec = await reconciliation(warehouse=None, session=session, core=core, _=None)
-    recon_max = max((abs(r.diff_value) for r in rec.rows if r.diff_value is not None), default=0.0)
-
-    # движения за сегодня (приход/расход)
-    today = date.today()
+    today = (await session.execute(select(func.current_date()))).scalar_one()
     start = datetime(today.year, today.month, today.day)
-    in_today = (
-        await session.execute(
-            select(func.coalesce(func.sum(StockMovement.qty), 0)).where(
-                StockMovement.kind == "in", StockMovement.created_at >= start
-            )
-        )
-    ).scalar()
-    out_today = (
-        await session.execute(
-            select(func.coalesce(func.sum(StockMovement.qty), 0)).where(
-                StockMovement.kind == "out", StockMovement.created_at >= start
-            )
-        )
-    ).scalar()
-
+    end = start + timedelta(days=1)
+    # Compare naive registration timestamps in the same database calendar.
+    period = (StockMovement.created_at >= start, StockMovement.created_at < end)
     return DashboardOut(
-        receipts_pending_qc=pending_qc,
-        tasks_putaway_open=putaway_open,
-        tasks_pick_open=pick_open,
-        alerts_count=len(deficits),
-        alerts_deficit_value=alerts_deficit_value,
-        inventory_value=inventory_value,
-        inventories_open=inv_open,
-        recon_max_diff_value=round(recon_max, 2),
-        recon_total_diff_value=rec.total_abs_diff_value,
-        movements_today_in=float(in_today or 0),
-        movements_today_out=float(out_today or 0),
-        gateway=core.services.stock is not None,
+        organization_id=organization_id,
+        report_date=today,
+        period_start=start,
+        period_end=end,
+        period_basis="stored_registration_date",
+        receipts_pending_qc=await count(Receipt, Receipt.status == "pending_qc"),
+        tasks_putaway_open=await count(Task, Task.kind == "putaway", Task.status.in_(("open", "in_progress"))),
+        tasks_pick_open=await count(Task, Task.kind == "pick", Task.status.in_(("open", "in_progress"))),
+        inventories_open=await count(InventoryCount, InventoryCount.status == "open"),
+        movement_rows_today_in=await count(StockMovement, StockMovement.kind == "in", *period),
+        movement_rows_today_out=await count(StockMovement, StockMovement.kind == "out", *period),
+        alerts_count=None, alerts_deficit_value=None, inventory_value=None,
+        recon_max_diff_value=None, recon_total_diff_value=None,
+        valuation_unavailable_reason="organization_valuation_unavailable",
+        movements_today_in=None, movements_today_out=None,
+        quantity_unavailable_reason="unit_snapshot_unavailable",
+        gateway=getattr(core.services, "stock", None) is not None,
     )

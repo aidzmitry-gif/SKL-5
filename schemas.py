@@ -12,7 +12,7 @@ class StockMovementCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     organization_id: int = Field(gt=0, strict=True)
     sku_code: str = Field(min_length=1, max_length=64)
-    warehouse: str = Field(default="Главный", min_length=1, max_length=128)
+    warehouse: str = Field(min_length=1, max_length=128)
     kind: Literal["in", "out"] = "in"  # in|out
     qty: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
     reason: str = ""
@@ -49,7 +49,7 @@ class MovementOpIn(BaseModel):
     organization_id: int = Field(gt=0, strict=True)
     sku_code: str = Field(min_length=1, max_length=64)
     qty: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
-    warehouse: str = Field(default="Главный", min_length=1, max_length=128)
+    warehouse: str = Field(min_length=1, max_length=128)
     location_id: int | None = None
     batch_ref: str = ""
     doc_ref: str = ""
@@ -63,7 +63,7 @@ class TransferIn(BaseModel):
     organization_id: int = Field(gt=0, strict=True)
     sku_code: str = Field(min_length=1, max_length=64)
     qty: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
-    warehouse: str = Field(default="Главный", min_length=1, max_length=128)
+    warehouse: str = Field(min_length=1, max_length=128)
     from_location_id: int | None = None
     to_location_id: int | None = None
     batch_ref: str = ""
@@ -77,7 +77,7 @@ class AdjustmentIn(BaseModel):
     organization_id: int = Field(gt=0, strict=True)
     sku_code: str = Field(min_length=1, max_length=64)
     qty: Decimal = Field(max_digits=14, decimal_places=2)
-    warehouse: str = Field(default="Главный", min_length=1, max_length=128)
+    warehouse: str = Field(min_length=1, max_length=128)
     location_id: int | None = None
     batch_ref: str = ""
     note: str = ""
@@ -504,15 +504,26 @@ class CyclePlanOut(BaseModel):
 
 
 class DashboardOut(BaseModel):
-    receipts_pending_qc: int  # приёмки в очереди QC
-    tasks_putaway_open: int  # открытые задачи размещения
-    tasks_pick_open: int  # открытые задачи подбора
-    alerts_count: int  # SKU ниже порога (low-stock)
-    alerts_deficit_value: float  # Σ дефицит×себес (1С) по нарушенным порогам; 0 без шлюза
-    inventory_value: float  # оценка остатка WMS в деньгах (in−out × себес 1С); 0 без шлюза
-    inventories_open: int  # открытые инвентаризации
-    recon_max_diff_value: float  # макс |расхождение в деньгах| (сверка с 1С)
-    recon_total_diff_value: float  # суммарное расхождение в деньгах
-    movements_today_in: float  # приход за сегодня
-    movements_today_out: float  # расход за сегодня
-    gateway: bool  # 1С-зависимые метрики (alerts/recon) валидны
+    organization_id: int = Field(gt=0)
+    report_date: date
+    period_start: datetime
+    period_end: datetime
+    period_basis: Literal["stored_registration_date"]
+    receipts_pending_qc: int = Field(ge=0)
+    tasks_putaway_open: int = Field(ge=0)
+    tasks_pick_open: int = Field(ge=0)
+    inventories_open: int = Field(ge=0)
+    movement_rows_today_in: int = Field(ge=0)
+    movement_rows_today_out: int = Field(ge=0)
+    # Global mirror rows have no company provenance; connection alone is not qualification.
+    alerts_count: int | None
+    alerts_deficit_value: float | None
+    inventory_value: float | None
+    recon_max_diff_value: float | None
+    recon_total_diff_value: float | None
+    valuation_unavailable_reason: Literal["organization_valuation_unavailable"] | None
+    # Historical movements do not retain a unit snapshot. Never sum mixed quantities.
+    movements_today_in: float | None
+    movements_today_out: float | None
+    quantity_unavailable_reason: Literal["unit_snapshot_unavailable"]
+    gateway: bool  # Configured service, not proof of ownership, freshness or valuation.
