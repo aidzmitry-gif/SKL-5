@@ -383,7 +383,7 @@ async def create(session, org, source, data, actor, execution_mode="wms"):
         chosen.append((allocation, prior, qty))
         totals[(allocation["sku_code"], item.warehouse)] += qty
     availability = await invoice_availability(session, org, [r[0]["sku_code"] for r in chosen])
-    from modules.wms.stock_policy import policies, check
+    from modules.wms.stock_policy import check, policies
     policy = await policies(session, org, {key[1] for key in totals})
     balances = {(r["sku_code"], r["warehouse"]): r for r in availability["rows"]}
     own = defaultdict(lambda: Decimal("0"))
@@ -451,7 +451,7 @@ async def guard_free(session, org, decreases, doc_refs=()):
         return
     result = await invoice_availability(session, org, [key[0] for key in needed])
     rows = {(r["sku_code"], r["warehouse"]): r for r in result["rows"]}
-    from modules.wms.stock_policy import policies, check
+    from modules.wms.stock_policy import check, policies
     policy = await policies(session, org, {key[1] for key in needed})
     for key, qty in needed.items():
         row = rows.get(key, {})
