@@ -16,6 +16,7 @@ from core.runtime.core import Core
 from core.runtime.deps import get_core, get_session
 from core.runtime.funnel import FunnelBoardOut, FunnelCard, build_board
 from core.services.auth import require_permission
+from modules.wms.location_scope import owned_warehouse, validate_location_ids
 from modules.wms.models import (
     CycleCountPlan,
     InventoryCount,
@@ -26,6 +27,7 @@ from modules.wms.models import (
     StockMovement,
     StockThreshold,
     Task,
+    WarehouseDirectory,
     WarehouseOp,
 )
 from modules.wms.organization import (
@@ -88,16 +90,8 @@ router = APIRouter(tags=["wms"])
 router.include_router(reservations_router)
 
 
-async def _validate_movement_locations(session: AsyncSession, warehouse: str, *location_ids: int | None) -> None:
-    ids = sorted({value for value in location_ids if value is not None})
-    if not ids:
-        return
-    locations = (await session.scalars(
-        select(Location).where(Location.id.in_(ids)).order_by(Location.id)
-        .with_for_update().execution_options(populate_existing=True)
-    )).all()
-    if len(locations) != len(ids) or any(not row.is_active or row.warehouse != warehouse for row in locations):
-        raise HTTPException(422, "Ячейка должна быть активной и принадлежать указанному складу")
+async def _validate_movement_locations(session: AsyncSession, organization_id: int, warehouse: str, *location_ids: int | None) -> None:
+    await validate_location_ids(session, organization_id, warehouse, *location_ids)
 
 
 # --- Журнал движений (приход/расход; наполняется и событиями других модулей) ---
@@ -143,7 +137,7 @@ async def create_movement(
     # never be presented as a substitute for an incoming invoice.
     if payload.kind == "in" and payload.reason == "receipt":
         raise HTTPException(409, "Supplier receipts are created in Procurement; prepare warehouse QC from the primary receipt")
-    await _validate_movement_locations(session, payload.warehouse, payload.location_id)
+    await _validate_movement_locations(session, payload.organization_id, payload.warehouse, payload.location_id)
     from modules.wms.invoice_shipments import guard_free
     await guard_free(session, payload.organization_id, {(payload.sku_code, payload.warehouse): Decimal(str(payload.qty)) if payload.kind == "out" else Decimal("0")}, [payload.doc_ref])
     obj = StockMovement(
@@ -193,7 +187,7 @@ async def shipment(
     во все три ключа. Без ``doc_ref`` событие НЕ эмитим: офис не сможет сопоставить документ.
     """
     await visible_organization_ids(session, core, _, payload.organization_id)
-    await _validate_movement_locations(session, payload.warehouse, payload.location_id)
+    await _validate_movement_locations(session, payload.organization_id, payload.warehouse, payload.location_id)
     from modules.wms.invoice_shipments import guard_free
     await guard_free(session, payload.organization_id, {(payload.sku_code, payload.warehouse): Decimal(str(payload.qty))}, [payload.doc_ref])
     obj = StockMovement(
@@ -236,7 +230,7 @@ async def transfer(
 ) -> list[StockMovement]:
     """Перемещение: пара движений out@from + in@to, связанных одним doc_ref (TRF-…)."""
     await visible_organization_ids(session, core, _, payload.organization_id)
-    await _validate_movement_locations(session, payload.warehouse, payload.from_location_id, payload.to_location_id)
+    await _validate_movement_locations(session, payload.organization_id, payload.warehouse, payload.from_location_id, payload.to_location_id)
     qty = Decimal(str(payload.qty))
     if qty <= 0:
         raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")
@@ -277,7 +271,7 @@ async def adjustment(
     Правит только теневой журнал WMS — остатки 1С не меняются (1С = истина, фаза 1).
     """
     await visible_organization_ids(session, core, _, payload.organization_id)
-    await _validate_movement_locations(session, payload.warehouse, payload.location_id)
+    await _validate_movement_locations(session, payload.organization_id, payload.warehouse, payload.location_id)
     qty = Decimal(str(payload.qty))
     if qty == 0:
         raise HTTPException(status_code=400, detail="Коррекция на ноль не имеет смысла")
@@ -307,25 +301,50 @@ async def adjustment(
 async def list_locations(
     warehouse: str | None = None,
     active: bool | None = None,
+    organization_id: int | None = Query(default=None, gt=0),
     session: AsyncSession = Depends(get_session),
-    _: object = Depends(require_permission("wms.read")),
+    core: Core = Depends(get_core),
+    user: object = Depends(require_permission("wms.read")),
 ):
-    """Ячейки склада (зона → код), сортировка по складу/зоне/коду."""
-    stmt = select(Location).order_by(Location.warehouse, Location.zone, Location.code)
+    """Only explicitly owned cells in authorized organization warehouse catalogues."""
+    visible = await visible_organization_ids(session, core, user, organization_id)
+    stmt = select(Location).join(WarehouseDirectory, (
+        (WarehouseDirectory.organization_id == Location.organization_id)
+        & (WarehouseDirectory.name == Location.warehouse)
+    )).where(Location.organization_id.in_(visible), WarehouseDirectory.is_active.is_(True))
     if warehouse:
         stmt = stmt.where(Location.warehouse == warehouse)
     if active is not None:
         stmt = stmt.where(Location.is_active == active)
-    return (await session.execute(stmt)).scalars().all()
+    return (await session.scalars(stmt.order_by(Location.organization_id, Location.warehouse, Location.zone, Location.code, Location.id))).all()
+
+
+@router.get("/locations/{loc_id}", response_model=LocationOut)
+async def get_location(
+    loc_id: int,
+    session: AsyncSession = Depends(get_session),
+    core: Core = Depends(get_core),
+    user: object = Depends(require_permission("wms.read")),
+):
+    visible = await visible_organization_ids(session, core, user)
+    row = await session.scalar(select(Location).join(WarehouseDirectory, (
+        (WarehouseDirectory.organization_id == Location.organization_id)
+        & (WarehouseDirectory.name == Location.warehouse)
+    )).where(Location.id == loc_id, Location.organization_id.in_(visible), WarehouseDirectory.is_active.is_(True)))
+    if row is None:
+        raise HTTPException(404, "Ячейка не найдена в доступных складах")
+    return row
 
 
 @router.post("/locations", response_model=LocationOut, status_code=201)
 async def create_location(
     payload: LocationCreate,
     session: AsyncSession = Depends(get_session),
-    _: object = Depends(require_permission("wms.count")),
+    core: Core = Depends(get_core),
+    user: object = Depends(require_permission("wms.count")),
 ):
-    """Создать ячейку/зону хранения."""
+    await visible_organization_ids(session, core, user, payload.organization_id)
+    await owned_warehouse(session, payload.organization_id, payload.warehouse)
     loc = Location(**payload.model_dump())
     session.add(loc)
     await session.commit()
@@ -338,12 +357,16 @@ async def update_location(
     loc_id: int,
     payload: LocationUpdate,
     session: AsyncSession = Depends(get_session),
-    _: object = Depends(require_permission("wms.count")),
+    core: Core = Depends(get_core),
+    user: object = Depends(require_permission("wms.count")),
 ):
-    """Переименовать/архивировать ячейку (is_active=false — скрыть из подбора)."""
-    loc = await session.get(Location, loc_id)
+    await visible_organization_ids(session, core, user, payload.organization_id)
+    loc = await session.scalar(select(Location).where(Location.id == loc_id,
+        Location.organization_id == payload.organization_id).with_for_update()
+        .execution_options(populate_existing=True))
     if loc is None:
-        raise HTTPException(status_code=404, detail="Ячейка не найдена")
+        raise HTTPException(404, "Ячейка не найдена в указанном юрлице")
+    await owned_warehouse(session, payload.organization_id, loc.warehouse)
     if payload.title is not None:
         loc.title = payload.title
     if payload.is_active is not None:
@@ -404,9 +427,10 @@ async def balances(
         else {}
     )
     loc_codes = (
-        dict(
-            (await session.execute(select(Location.id, Location.code).where(Location.id.in_(loc_ids)))).all()
-        )
+        {(owner, wh, ident): label for owner, wh, ident, label in
+            (await session.execute(select(Location.organization_id, Location.warehouse, Location.id, Location.code).where(
+                Location.id.in_(loc_ids), Location.organization_id.in_(visible)
+            ))).all()}
         if loc_ids
         else {}
     )
@@ -417,7 +441,7 @@ async def balances(
             sku_title=titles.get(code, ""),
             warehouse=wh,
             location_id=loc_id,
-            location_code=loc_codes.get(loc_id, "") if loc_id is not None else "",
+            location_code=loc_codes.get((owner, wh, loc_id), "") if loc_id is not None else "",
             batch_ref=batch or "",
             qty=float(qty),
         )
@@ -1251,7 +1275,7 @@ async def qc_receipt(
     decision_ids = [d.line_id for d in payload.decisions]
     if len(decision_ids) != len(set(decision_ids)) or any(line_id not in lines for line_id in decision_ids):
         raise HTTPException(422, "Строки контроля качества должны принадлежать приёмке и не повторяться")
-    await _validate_movement_locations(session, r.warehouse, *(d.location_id for d in payload.decisions))
+    await _validate_movement_locations(session, r.organization_id, r.warehouse, *(d.location_id for d in payload.decisions))
     for d in payload.decisions:
         line = lines.get(d.line_id)
         line.accepted_qty = Decimal(str(d.accepted_qty))
@@ -1299,7 +1323,7 @@ async def accept_receipt(
         )
     ).scalars().all()
     await validate_primary_acceptance(session, core, r, lines)
-    await _validate_movement_locations(session, r.warehouse, *(
+    await _validate_movement_locations(session, r.organization_id, r.warehouse, *(
         line.location_id for line in lines
         if (line.accepted_qty if line.accepted_qty is not None else line.expected_qty) > 0
     ))
@@ -1410,7 +1434,7 @@ async def create_task(
         raise HTTPException(409, "Неизвестный или отключённый склад; обновите справочник") from exc
     if not modes[payload.warehouse]:
         raise HTTPException(409, "WMS execution is disabled for this warehouse")
-    await _validate_movement_locations(session, payload.warehouse, payload.from_location_id, payload.to_location_id)
+    await _validate_movement_locations(session, payload.organization_id, payload.warehouse, payload.from_location_id, payload.to_location_id)
     t = Task(**payload.model_dump())
     session.add(t)
     await session.commit()
@@ -1480,7 +1504,7 @@ async def update_task(
         raise HTTPException(status_code=409, detail="Задача уже закрыта")
     if payload.to_location_id is not None or payload.status == "done":
         destination = payload.to_location_id if payload.to_location_id is not None else t.to_location_id
-        await _validate_movement_locations(session, t.warehouse, t.from_location_id, destination)
+        await _validate_movement_locations(session, t.organization_id, t.warehouse, t.from_location_id, destination)
     if payload.assignee is not None:
         t.assignee = payload.assignee
     if payload.to_location_id is not None:
@@ -1538,7 +1562,7 @@ async def pack(
         raise HTTPException(409, "Неизвестный или отключённый склад; обновите справочник") from exc
     if not modes[payload.warehouse]:
         raise HTTPException(409, "WMS execution is disabled for this warehouse")
-    await _validate_movement_locations(session, payload.warehouse, payload.location_id)
+    await _validate_movement_locations(session, payload.organization_id, payload.warehouse, payload.location_id)
     qty = Decimal(str(payload.qty))
     if qty <= 0:
         raise HTTPException(status_code=400, detail="Количество должно быть больше нуля")

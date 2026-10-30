@@ -24,7 +24,8 @@ from core.db.base import Base
 from modules.production.accounting_ownership import ProductionOrderOwnership, order_snapshot
 from modules.production.models import ProductionOrder
 from modules.wms.invoice_shipments import guard_free
-from modules.wms.models import Location, StockMovement
+from modules.wms.location_scope import validate_location_ids
+from modules.wms.models import StockMovement
 
 
 class ProductionMaterialIssueCommand(BaseModel):
@@ -107,9 +108,7 @@ async def preview_material_issue(session, gateway, organization_id: int, user, c
     if command.operation_date is None:
         raise HTTPException(422, "Material issue operation date is required")
     if command.location_id is not None:
-        location = await session.scalar(select(Location).where(Location.id == command.location_id).with_for_update())
-        if location is None or not location.is_active or location.warehouse != command.warehouse:
-            raise HTTPException(422, "Material issue location must be active in the selected warehouse")
+        await validate_location_ids(session, organization_id, command.warehouse, command.location_id)
     return {
         "organization_id": organization_id,
         "principal": actor,
@@ -146,9 +145,7 @@ async def record_material_issue(session, gateway, organization_id: int, user,
     _, snapshot = await _owned_order(session, organization_id, command)
     await guard_free(session, organization_id, {(command.sku_code, command.warehouse): command.quantity})
     if command.location_id is not None:
-        location = await session.scalar(select(Location).where(Location.id == command.location_id).with_for_update())
-        if location is None or not location.is_active or location.warehouse != command.warehouse:
-            raise HTTPException(422, "Material issue location must be active in the selected warehouse")
+        await validate_location_ids(session, organization_id, command.warehouse, command.location_id)
     source = _source(command.request_id)
     movement = StockMovement(
         organization_id=organization_id, sku_code=command.sku_code, warehouse=command.warehouse,

@@ -10,6 +10,8 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
     Integer,
     Numeric,
     String,
@@ -165,7 +167,17 @@ class Location(Base):
     """
 
     __tablename__ = "location"
-    __table_args__ = {"schema": "wms"}
+    __table_args__ = (
+        CheckConstraint("organization_id > 0", name="wms_location_org_positive"),
+        ForeignKeyConstraint(["organization_id", "warehouse"],
+                             ["wms.warehouse_directory.organization_id", "wms.warehouse_directory.name"],
+                             name="fk_wms_location_warehouse"),
+        Index("ix_wms_location_organization_id", "organization_id"),
+        {"schema": "wms"},
+    )
+
+    # Unowned legacy rows stay unowned until their provenance is verified.
+    organization_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     warehouse: Mapped[str] = mapped_column(

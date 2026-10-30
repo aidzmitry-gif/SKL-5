@@ -87,13 +87,17 @@ class AdjustmentIn(BaseModel):
 
 
 class LocationCreate(BaseModel):
-    warehouse: str = "Главный"
-    zone: str = ""
-    code: str
-    title: str = ""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    organization_id: int = Field(gt=0, strict=True)
+    warehouse: str = Field(min_length=1, max_length=128)
+    zone: str = Field(default="", max_length=64)
+    code: str = Field(min_length=1, max_length=64)
+    title: str = Field(default="", max_length=255)
 
 
 class LocationUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    organization_id: int = Field(gt=0, strict=True)
     title: str | None = None
     is_active: bool | None = None
 
@@ -102,6 +106,7 @@ class LocationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    organization_id: int
     warehouse: str
     zone: str
     code: str

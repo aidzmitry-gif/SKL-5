@@ -68,30 +68,41 @@ class WmsReservationService:
         return {"state": receipt.status, "receipt_id": receipt.id, "accepted_quantity": accepted,
             "rejected_quantity": rejected, "movement_ids": [m.id for m in movements]}
 
-    async def receiving_places(self, session, query):
+    async def receiving_places(self, session, organization_id, query):
+        from fastapi import HTTPException
         from sqlalchemy import or_, select
 
-        from modules.wms.models import Location
+        from modules.wms.models import Location, WarehouseDirectory
 
-        rows = (await session.scalars(select(Location).where(Location.is_active.is_(True), or_(
-            Location.code.icontains(query, autoescape=True), Location.warehouse.icontains(query, autoescape=True),
-            Location.title.icontains(query, autoescape=True)))
+        if type(organization_id) is not int or organization_id <= 0:
+            raise HTTPException(422, "Укажите юрлицо для поиска ячейки")
+        rows = (await session.scalars(select(Location).join(WarehouseDirectory, (
+            (WarehouseDirectory.organization_id == Location.organization_id)
+            & (WarehouseDirectory.name == Location.warehouse)
+        )).where(Location.organization_id == organization_id,
+            WarehouseDirectory.is_active.is_(True), Location.is_active.is_(True), or_(
+                Location.code.icontains(query, autoescape=True), Location.warehouse.icontains(query, autoescape=True),
+                Location.title.icontains(query, autoescape=True)))
             .order_by(Location.warehouse, Location.code, Location.id).limit(50))).all()
-        return [{"location_id": row.id, "warehouse": row.warehouse, "code": row.code,
-            "zone": row.zone, "title": row.title} for row in rows]
+        return [{"location_id": row.id, "organization_id": row.organization_id, "warehouse": row.warehouse,
+                 "code": row.code, "zone": row.zone, "title": row.title} for row in rows]
 
-    async def receiving_place(self, session, warehouse, location_id):
+    async def receiving_place(self, session, organization_id, warehouse, location_id):
         from fastapi import HTTPException
-        from sqlalchemy import select
 
-        from modules.wms.models import Location
+        from modules.wms.location_scope import validate_location_ids
 
-        location = await session.scalar(select(Location).where(Location.id == location_id)
-            .with_for_update().execution_options(populate_existing=True))
-        if location is None or not location.is_active or location.warehouse != warehouse:
-            raise HTTPException(409, "Receiving location must be active and match the warehouse")
+        if type(location_id) is not int or location_id <= 0:
+            raise HTTPException(409, "Укажите подтверждённую ячейку приёмки")
+        try:
+            rows = await validate_location_ids(session, organization_id, warehouse, location_id)
+        except HTTPException as exc:
+            if exc.status_code != 422:
+                raise
+            raise HTTPException(409, exc.detail) from exc
+        location = rows[0]
         return {"location_id": location.id, "warehouse": location.warehouse,
-            "code": location.code, "zone": location.zone, "title": location.title}
+                "code": location.code, "zone": location.zone, "title": location.title}
 
     async def receipt_reconciliation(self, session, organization_id, source):
         from modules.wms.primary_receipt_reconciliation import reconcile
