@@ -10,6 +10,11 @@ from modules.wms.invoice_reservations import (
 
 
 class WmsReservationService:
+    async def invoice_shipping_progress(self, session, organization_id, source):
+        from modules.wms.invoice_shipping_progress import progress
+
+        return await progress(session, organization_id, source)
+
     async def invoice_remainder_preview(self, session, organization_id, source):
         from modules.wms.invoice_remainder import preview
         return await preview(session, organization_id, source)
